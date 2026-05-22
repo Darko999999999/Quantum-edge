@@ -2,8 +2,12 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 import sqlite3
 from datetime import datetime
+import urllib.request
+import urllib.parse
+import re
 
 app = FastAPI(title="Quantum Edge Web")
+
 DB_PATH = "quantum_edge.db"
 
 
@@ -28,30 +32,169 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
+
+
+ALIASES = {
+    "fiorentina": ["fiorentina", "acf fiorentina"],
+    "atalanta": ["atalanta", "atalanta bc"],
+    "lens": ["lens", "rc lens"],
+    "nice": ["nice", "ogc nice", "nicea"],
+    "nicea": ["nice", "ogc nice", "nicea"],
+}
 
 
 def esc(x):
     return str(x).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+def norm(x):
+    return (x or "").lower().replace(" ", "").replace("-", "").replace(".", "").replace("_", "").replace("'", "")
+
+
+def team_aliases(name):
+    key = (name or "").strip().lower()
+    return ALIASES.get(key, [key])
+
+
 def default_values():
     return {
-        "home_team": "", "away_team": "", "city": "",
-        "xg_home": 1.25, "xg_away": 0.95,
-        "form_home": 60, "form_away": 55,
-        "tempo": 50, "odds": 1.75,
-        "odds_1": 2.10, "odds_x": 3.40, "odds_2": 3.35,
-        "shots_home": 11, "shots_away": 10,
-        "sot_home": 4, "sot_away": 3,
-        "corners_home": 5, "corners_away": 4,
-        "cards_home": 2, "cards_away": 2,
-        "defensive_control": 60, "draw_acceptance": 55,
-        "collapse_home": 35, "collapse_away": 40,
-        "absences": 25, "weather": 15, "market_risk": 25,
-        "bookmaker": "STS", "odds_source": "ręcznie / fallback",
-        "btts": 55, "over25": 50, "confidence": 60,
-        "message": "", "sources": []
+        "home_team": "",
+        "away_team": "",
+        "city": "",
+        "xg_home": 1.25,
+        "xg_away": 0.95,
+        "form_home": 60,
+        "form_away": 55,
+        "tempo": 50,
+        "odds": 1.75,
+        "odds_1": 2.10,
+        "odds_x": 3.40,
+        "odds_2": 3.35,
+        "shots_home": 11,
+        "shots_away": 10,
+        "sot_home": 4,
+        "sot_away": 3,
+        "corners_home": 5,
+        "corners_away": 4,
+        "cards_home": 2,
+        "cards_away": 2,
+        "defensive_control": 60,
+        "draw_acceptance": 55,
+        "collapse_home": 35,
+        "collapse_away": 40,
+        "absences": 25,
+        "weather": 15,
+        "market_risk": 25,
+        "bookmaker": "STS",
+        "odds_source": "brak pewnego źródła",
+        "btts": 55,
+        "over25": 50,
+        "confidence": 60,
+    }
+
+
+def http_text(url, timeout=12):
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/125.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="ignore"), None
+    except Exception as e:
+        return "", str(e)
+
+
+def parse_decimal_numbers(text):
+    nums = []
+    for raw in re.findall(r'(?<!\d)([1-9]\d?[,\.]\d{2})(?!\d)', text):
+        try:
+            val = float(raw.replace(",", "."))
+            if 1.01 <= val <= 30:
+                nums.append(val)
+        except Exception:
+            pass
+    return nums
+
+
+def public_sts_odds(home_team, away_team):
+    """
+    Próba bez logowania: pobiera publiczne strony STS i szuka nazw drużyn.
+    STS może blokować albo ładować kursy JS-em, więc funkcja zwraca tylko kursy,
+    gdy znajdzie pewny blok z obiema drużynami i trzema kursami 1X2.
+    """
+    queries = [
+        f"{home_team} {away_team}",
+        f"{home_team} - {away_team}",
+        f"{away_team} {home_team}",
+    ]
+
+    urls = []
+    for q in queries:
+        urls.append("https://www.sts.pl/szukaj/?q=" + urllib.parse.quote(q))
+        urls.append("https://www.sts.pl/zaklady-bukmacherskie/pilka-nozna/?q=" + urllib.parse.quote(q))
+
+    home_alias = [norm(x) for x in team_aliases(home_team)]
+    away_alias = [norm(x) for x in team_aliases(away_team)]
+
+    last_error = ""
+
+    for url in urls:
+        html, err = http_text(url)
+        if err:
+            last_error = err
+            continue
+        if not html:
+            continue
+
+        text_norm = norm(html)
+
+        if not any(a in text_norm for a in home_alias):
+            continue
+        if not any(a in text_norm for a in away_alias):
+            continue
+
+        # Szukamy fragmentu strony w okolicy obu nazw drużyn.
+        positions = []
+        for a in home_alias + away_alias:
+            p = text_norm.find(a)
+            if p >= 0:
+                positions.append(p)
+
+        if not positions:
+            continue
+
+        start = max(0, min(positions) - 6000)
+        end = min(len(html), max(positions) + 6000)
+        block = html[start:end]
+
+        odds = parse_decimal_numbers(block)
+
+        # Heurystyka: pierwsze 3 wiarygodne kursy w bloku obu drużyn traktujemy jako 1X2.
+        # Nie akceptujemy, gdy kursy wyglądają podejrzanie nisko / brak trzech wartości.
+        if len(odds) >= 3:
+            o1, ox, o2 = odds[0], odds[1], odds[2]
+            if o1 > 1.01 and ox > 1.01 and o2 > 1.01:
+                return {
+                    "success": True,
+                    "odds_1": round(o1, 2),
+                    "odds_x": round(ox, 2),
+                    "odds_2": round(o2, 2),
+                    "source": "STS public offer / parser",
+                    "url": url,
+                    "note": "Kursy znalezione bez logowania. Sprawdź zgodność z aplikacją STS przed grą.",
+                }
+
+    return {
+        "success": False,
+        "source": "STS public offer / parser",
+        "error": last_error or "Nie znaleziono pewnego bloku kursów 1X2 dla tego meczu.",
     }
 
 
@@ -60,8 +203,10 @@ def fetch_stats_proxy(home_team, away_team, city):
     v["home_team"] = home_team
     v["away_team"] = away_team
     v["city"] = city
+
     h_len = max(1, len(home_team))
     a_len = max(1, len(away_team))
+
     v["xg_home"] = round(1.05 + (h_len % 5) * 0.08, 2)
     v["xg_away"] = round(0.90 + (a_len % 5) * 0.07, 2)
     v["form_home"] = 58
@@ -83,17 +228,32 @@ def fetch_stats_proxy(home_team, away_team, city):
     return v
 
 
-def fetch_odds_proxy(home_team, away_team, bookmaker):
+def fetch_odds(home_team, away_team, bookmaker):
     v = default_values()
     v["home_team"] = home_team
     v["away_team"] = away_team
     v["bookmaker"] = bookmaker
-    v["odds_1"] = 2.10
-    v["odds_x"] = 3.40
-    v["odds_2"] = 3.35
-    v["odds"] = v["odds_1"]
-    v["odds_source"] = f"{bookmaker}: brak stabilnego automatycznego źródła — użyto fallbacku"
-    v["message"] = "Kursy uzupełnione fallbackiem. Jeśli bukmacher pokazuje inne kursy, wpisz je ręcznie."
+
+    if bookmaker.strip().lower() == "sts":
+        res = public_sts_odds(home_team, away_team)
+        if res.get("success"):
+            v["odds_1"] = res["odds_1"]
+            v["odds_x"] = res["odds_x"]
+            v["odds_2"] = res["odds_2"]
+            v["odds"] = res["odds_1"]
+            v["odds_source"] = res["source"]
+            v["message"] = "Kursy STS zostały pobrane z publicznej oferty. Zweryfikuj je przed zagraniem."
+            v["sources"] = [res["source"]]
+            v["confidence"] = 72
+            return v
+
+        v["odds_source"] = "STS: nie znaleziono pewnego kursu publicznego"
+        v["message"] = "Nie udało się pewnie pobrać kursów STS. Zostawiam fallback i pola do ręcznej korekty."
+        v["sources"] = [v["odds_source"]]
+        return v
+
+    v["odds_source"] = f"{bookmaker}: parser nie jest jeszcze podłączony"
+    v["message"] = f"Dla {bookmaker} parser nie jest jeszcze podłączony. Zostawiam fallback i pola do ręcznej korekty."
     v["sources"] = [v["odds_source"]]
     return v
 
@@ -126,6 +286,7 @@ def calculate_model(d):
     form_away = float(d["form_away"])
     tempo = float(d["tempo"])
     odds = float(d["odds"])
+
     defensive_control = float(d["defensive_control"])
     draw_acceptance = float(d["draw_acceptance"])
     collapse_home = float(d["collapse_home"])
@@ -133,25 +294,49 @@ def calculate_model(d):
     absences = float(d["absences"])
     weather = float(d["weather"])
     market_risk = float(d["market_risk"])
+
     shots_total = float(d["shots_home"]) + float(d["shots_away"])
     sot_total = float(d["sot_home"]) + float(d["sot_away"])
     corners_total = float(d["corners_home"]) + float(d["corners_away"])
     cards_total = float(d["cards_home"]) + float(d["cards_away"])
+
     chaos = round((tempo + collapse_home + collapse_away + absences + weather + market_risk) / 6, 1)
+
     stat_bonus = 0
-    if shots_total >= 25: stat_bonus += 3
-    if sot_total >= 9: stat_bonus += 3
-    if corners_total >= 11: stat_bonus += 2
-    if cards_total >= 5: stat_bonus += 1
-    if shots_total <= 18 and sot_total <= 6: stat_bonus -= 3
+    if shots_total >= 25:
+        stat_bonus += 3
+    if sot_total >= 9:
+        stat_bonus += 3
+    if corners_total >= 11:
+        stat_bonus += 2
+    if cards_total >= 5:
+        stat_bonus += 1
+    if shots_total <= 18 and sot_total <= 6:
+        stat_bonus -= 3
+
     total_xg = xg_home + xg_away
     flow_bonus = 5 if total_xg <= 2.35 and tempo <= 55 and defensive_control >= 58 else 0
-    probability = (((form_home + form_away) / 2) * 0.16 + defensive_control * 0.18 + draw_acceptance * 0.06 + (100 - chaos) * 0.28 + (100 - absences) * 0.08 + (100 - market_risk) * 0.08 + 20 + stat_bonus + flow_bonus)
-    if chaos >= 65: probability -= 8
+
+    probability = (
+        ((form_home + form_away) / 2) * 0.16
+        + defensive_control * 0.18
+        + draw_acceptance * 0.06
+        + (100 - chaos) * 0.28
+        + (100 - absences) * 0.08
+        + (100 - market_risk) * 0.08
+        + 20
+        + stat_bonus
+        + flow_bonus
+    )
+
+    if chaos >= 65:
+        probability -= 8
+
     probability = round(max(1, min(95, probability)), 1)
     fair = fair_odds(probability)
     edge = value_edge(probability, odds)
     pick, exact = choose_pick(xg_home, xg_away, tempo, defensive_control, chaos)
+
     if edge > 5 and probability >= 60 and chaos <= 45:
         rating = "TOP VALUE"
     elif edge > 2 and probability >= 60 and chaos <= 55:
@@ -160,13 +345,27 @@ def calculate_model(d):
         rating = "LEKKIE VALUE"
     else:
         rating = "BRAK VALUE"
-    return {"pick": pick, "exact_score": exact, "probability": probability, "fair_odds": fair, "value_edge": edge, "chaos": chaos, "rating": rating, "total_xg": round(total_xg, 2), "shots_total": round(shots_total, 1), "sot_total": round(sot_total, 1), "corners_total": round(corners_total, 1), "cards_total": round(cards_total, 1)}
+
+    return {
+        "pick": pick,
+        "exact_score": exact,
+        "probability": probability,
+        "fair_odds": fair,
+        "value_edge": edge,
+        "chaos": chaos,
+        "rating": rating,
+        "total_xg": round(total_xg, 2),
+        "shots_total": round(shots_total, 1),
+        "sot_total": round(sot_total, 1),
+        "corners_total": round(corners_total, 1),
+        "cards_total": round(cards_total, 1),
+    }
 
 
 def card_result(result, v):
     if not result:
         return ""
-    return f'''
+    return f"""
 <section class="card">
     <div class="match">{esc(v["home_team"])} <span>vs</span> {esc(v["away_team"])}</div>
     <div class="grid-3">
@@ -187,14 +386,14 @@ def card_result(result, v):
         <div><span>Kartki</span><b>{result["cards_total"]}</b></div>
     </div>
 </section>
-'''
+"""
 
 
 def card_auto(fetched):
     if not fetched:
         return ""
     sources = ", ".join(fetched.get("sources", []))
-    return f'''
+    return f"""
 <section class="card">
     <h2>Dane pobrane / uzupełnione</h2>
     <p>{esc(fetched.get("message", ""))}</p>
@@ -210,18 +409,28 @@ def card_auto(fetched):
         <div><span>Tempo</span><b>{fetched["tempo"]}/100</b></div>
     </div>
 </section>
-'''
+"""
 
 
 def build_page(values=None, result=None, fetched=None, history=None):
     v = values or default_values()
+
     history_html = ""
     if history:
         rows = ""
         for r in history:
-            rows += f'<div class="history-row"><div><b>{esc(r[2])} vs {esc(r[3])}</b><small>{esc(r[1])}</small></div><div>{esc(r[4])}</div><div>{r[5]}%</div><div>{r[8]} pp</div><div>{esc(r[10])}</div></div>'
+            rows += f"""
+            <div class="history-row">
+                <div><b>{esc(r[2])} vs {esc(r[3])}</b><small>{esc(r[1])}</small></div>
+                <div>{esc(r[4])}</div>
+                <div>{r[5]}%</div>
+                <div>{r[8]} pp</div>
+                <div>{esc(r[10])}</div>
+            </div>
+            """
         history_html = f'<section class="card"><h2>Historia analiz</h2>{rows}</section>'
-    return f'''
+
+    return f"""
 <!DOCTYPE html>
 <html lang="pl">
 <head>
@@ -264,64 +473,68 @@ button.main{{width:100%;margin-top:18px;padding:15px;border:none;border-radius:1
 </head>
 <body>
 <div class="app">
-<header><div class="logo">⚛ QUANTUM <span>EDGE</span></div><div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div></header>
-<section class="card hero"><div class="label">ANALIZA MECZU</div><h1>Quantum Edge Web MVP</h1><p>⚡ pobiera statystyki. 💰 pobiera/uzupełnia kursy. Jeżeli brak stabilnego źródła, aplikacja nie udaje kursów bukmachera.</p></section>
+<header>
+    <div class="logo">⚛ QUANTUM <span>EDGE</span></div>
+    <div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div>
+</header>
+
+<section class="card hero">
+    <div class="label">ANALIZA MECZU</div>
+    <h1>Quantum Edge Web MVP</h1>
+    <p>⚡ pobiera statystyki. 💰 próbuje pobrać publiczne kursy STS bez logowania. Jeżeli nie ma pewnego kursu, zostaje ręczna korekta.</p>
+</section>
+
 {card_result(result, v)}
 {card_auto(fetched)}
 {history_html}
+
 <form action="/fetch" method="post" class="card">
-    <div class="topline"><h2>Dane meczu</h2><div class="iconbar"><button class="roundbtn" name="mode" value="stats" type="submit">⚡</button><button class="roundbtn money" name="mode" value="odds" type="submit">💰</button></div></div>
-    <div class="two"><label>Gospodarz<input name="home_team" required value="{esc(v['home_team'])}" placeholder="Lens"></label><label>Gość<input name="away_team" required value="{esc(v['away_team'])}" placeholder="Nice"></label><label>Miasto meczu / pogoda<input name="city" value="{esc(v.get('city',''))}" placeholder="Lens"></label><label>Bukmacher<select name="bookmaker"><option>STS</option><option>Betclic</option><option>Fortuna</option><option>Superbet</option><option>Rynek</option></select></label></div>
+    <div class="topline">
+        <h2>Dane meczu</h2>
+        <div class="iconbar">
+            <button class="roundbtn" name="mode" value="stats" type="submit" title="Pobierz statystyki">⚡</button>
+            <button class="roundbtn money" name="mode" value="odds" type="submit" title="Pobierz kursy STS">💰</button>
+        </div>
+    </div>
+    <div class="two">
+        <label>Gospodarz<input name="home_team" required value="{esc(v["home_team"])}" placeholder="Fiorentina"></label>
+        <label>Gość<input name="away_team" required value="{esc(v["away_team"])}" placeholder="Atalanta"></label>
+        <label>Miasto meczu / pogoda<input name="city" value="{esc(v.get("city",""))}" placeholder="Florencja"></label>
+        <label>Bukmacher
+            <select name="bookmaker">
+                <option>STS</option>
+                <option>Betclic</option>
+                <option>Fortuna</option>
+                <option>Superbet</option>
+                <option>Rynek</option>
+            </select>
+        </label>
+    </div>
 </form>
+
 <form action="/analyze" method="post" class="card">
-    <input type="hidden" name="home_team" value="{esc(v['home_team'])}"><input type="hidden" name="away_team" value="{esc(v['away_team'])}">
-    <h3>xG / forma</h3><div class="two"><label>xG gospodarz<input type="number" step="0.01" name="xg_home" value="{v['xg_home']}"></label><label>xG gość<input type="number" step="0.01" name="xg_away" value="{v['xg_away']}"></label><label>Forma gospodarz<input type="number" step="1" name="form_home" value="{v['form_home']}"></label><label>Forma gość<input type="number" step="1" name="form_away" value="{v['form_away']}"></label></div>
-    <h3>Kursy</h3><div class="two"><label>Główny kurs do modelu<input type="number" step="0.01" name="odds" value="{v['odds']}"></label><label>Kurs 1<input type="number" step="0.01" name="odds_1" value="{v['odds_1']}"></label><label>Kurs X<input type="number" step="0.01" name="odds_x" value="{v['odds_x']}"></label><label>Kurs 2<input type="number" step="0.01" name="odds_2" value="{v['odds_2']}"></label></div>
-    <h3>Statystyki</h3><div class="two"><label>Tempo 0-100<input type="number" step="1" name="tempo" value="{v['tempo']}"></label><label>Strzały gospodarz<input type="number" step="0.1" name="shots_home" value="{v['shots_home']}"></label><label>Strzały gość<input type="number" step="0.1" name="shots_away" value="{v['shots_away']}"></label><label>Celne gospodarz<input type="number" step="0.1" name="sot_home" value="{v['sot_home']}"></label><label>Celne gość<input type="number" step="0.1" name="sot_away" value="{v['sot_away']}"></label><label>Rożne gospodarz<input type="number" step="0.1" name="corners_home" value="{v['corners_home']}"></label><label>Rożne gość<input type="number" step="0.1" name="corners_away" value="{v['corners_away']}"></label><label>Kartki gospodarz<input type="number" step="0.1" name="cards_home" value="{v['cards_home']}"></label><label>Kartki gość<input type="number" step="0.1" name="cards_away" value="{v['cards_away']}"></label></div>
-    <h3>Flow / ryzyko</h3><div class="two"><label>Defensive control<input type="number" step="1" name="defensive_control" value="{v['defensive_control']}"></label><label>Akceptacja remisu<input type="number" step="1" name="draw_acceptance" value="{v['draw_acceptance']}"></label><label>Collapse gospodarz<input type="number" step="1" name="collapse_home" value="{v['collapse_home']}"></label><label>Collapse gość<input type="number" step="1" name="collapse_away" value="{v['collapse_away']}"></label><label>Absencje / rotacje<input type="number" step="1" name="absences" value="{v['absences']}"></label><label>Pogoda<input type="number" step="1" name="weather" value="{v['weather']}"></label><label>Rynek / kursy<input type="number" step="1" name="market_risk" value="{v['market_risk']}"></label></div>
-    <button class="main" type="submit">Analizuj mecz</button>
-</form>
-</div></body></html>
-'''
+    <input type="hidden" name="home_team" value="{esc(v["home_team"])}">
+    <input type="hidden" name="away_team" value="{esc(v["away_team"])}">
 
+    <h3>xG / forma</h3>
+    <div class="two">
+        <label>xG gospodarz<input type="number" step="0.01" name="xg_home" value="{v["xg_home"]}"></label>
+        <label>xG gość<input type="number" step="0.01" name="xg_away" value="{v["xg_away"]}"></label>
+        <label>Forma gospodarz<input type="number" step="1" name="form_home" value="{v["form_home"]}"></label>
+        <label>Forma gość<input type="number" step="1" name="form_away" value="{v["form_away"]}"></label>
+    </div>
 
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return build_page()
+    <h3>Kursy</h3>
+    <div class="two">
+        <label>Główny kurs do modelu<input type="number" step="0.01" name="odds" value="{v["odds"]}"></label>
+        <label>Kurs 1<input type="number" step="0.01" name="odds_1" value="{v["odds_1"]}"></label>
+        <label>Kurs X<input type="number" step="0.01" name="odds_x" value="{v["odds_x"]}"></label>
+        <label>Kurs 2<input type="number" step="0.01" name="odds_2" value="{v["odds_2"]}"></label>
+    </div>
 
-
-@app.post("/fetch", response_class=HTMLResponse)
-def fetch(home_team: str = Form(...), away_team: str = Form(...), city: str = Form(""), bookmaker: str = Form("STS"), mode: str = Form("stats")):
-    fetched = fetch_odds_proxy(home_team, away_team, bookmaker) if mode == "odds" else fetch_stats_proxy(home_team, away_team, city)
-    values = default_values()
-    for k in values:
-        if k in fetched:
-            values[k] = fetched[k]
-    return build_page(values=values, fetched=fetched)
-
-
-@app.post("/analyze", response_class=HTMLResponse)
-def analyze(home_team: str = Form(...), away_team: str = Form(...), xg_home: float = Form(1.25), xg_away: float = Form(0.95), form_home: float = Form(60), form_away: float = Form(55), tempo: float = Form(50), odds: float = Form(1.75), odds_1: float = Form(2.10), odds_x: float = Form(3.40), odds_2: float = Form(3.35), shots_home: float = Form(11), shots_away: float = Form(10), sot_home: float = Form(4), sot_away: float = Form(3), corners_home: float = Form(5), corners_away: float = Form(4), cards_home: float = Form(2), cards_away: float = Form(2), defensive_control: float = Form(60), draw_acceptance: float = Form(55), collapse_home: float = Form(35), collapse_away: float = Form(40), absences: float = Form(25), weather: float = Form(15), market_risk: float = Form(25)):
-    data = locals()
-    result = calculate_model(data)
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (datetime.now().strftime("%Y-%m-%d %H:%M"), home_team, away_team, result["pick"], result["probability"], result["fair_odds"], odds, result["value_edge"], result["exact_score"], result["rating"]))
-    conn.commit()
-    conn.close()
-    values = default_values()
-    for k in values:
-        if k in data:
-            values[k] = data[k]
-    return build_page(values=values, result=result)
-
-
-@app.get("/history", response_class=HTMLResponse)
-def history():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM analyses ORDER BY id DESC LIMIT 50")
-    rows = cur.fetchall()
-    conn.close()
-    return build_page(history=rows)
-    
+    <h3>Statystyki</h3>
+    <div class="two">
+        <label>Tempo 0-100<input type="number" step="1" name="tempo" value="{v["tempo"]}"></label>
+        <label>Strzały gospodarz<input type="number" step="0.1" name="shots_home" value="{v["shots_home"]}"></label>
+        <label>Strzały gość<input type="number" step="0.1" name="shots_away" value="{v["shots_away"]}"></label>
+        <label>Celne gospodarz<input type="num
