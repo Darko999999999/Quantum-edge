@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 import urllib.request
 import urllib.parse
+import json
 import re
 
 app = FastAPI(title='Quantum Edge Web')
@@ -33,6 +34,19 @@ def init_db():
 
 
 init_db()
+
+
+SPORT_KEYS = [
+    'soccer_italy_serie_a',
+    'soccer_france_ligue_one',
+    'soccer_france_ligue_two',
+    'soccer_epl',
+    'soccer_spain_la_liga',
+    'soccer_germany_bundesliga',
+    'soccer_uefa_champs_league',
+    'soccer_uefa_europa_league',
+    'soccer_uefa_europa_conference_league'
+]
 
 
 def esc(x):
@@ -72,76 +86,175 @@ def default_values():
         'absences': 25,
         'weather': 15,
         'market_risk': 25,
-        'bookmaker': 'STS',
+        'bookmaker': 'Rynek',
         'odds_source': 'brak pewnego źródła',
         'btts': 55,
         'over25': 50,
         'confidence': 60,
         'message': '',
-        'sources': ''
+        'sources': '',
+        'odds_api_key': ''
     }
 
 
-def http_text(url):
+def http_json(url):
     try:
         req = urllib.request.Request(
             url,
             headers={
                 'User-Agent': 'Mozilla/5.0',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'pl-PL,pl;q=0.9,en;q=0.8'
+                'Accept': 'application/json'
             }
         )
-        with urllib.request.urlopen(req, timeout=12) as response:
-            return response.read().decode('utf-8', errors='ignore'), None
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read().decode('utf-8', errors='ignore')), None
     except Exception as e:
-        return '', str(e)
+        return None, str(e)
 
 
-def parse_odds(text):
-    found = []
-    for raw in re.findall(r'(?<!\\d)([1-9]\\d?[,\\.]\\d{2})(?!\\d)', text):
-        try:
-            val = float(raw.replace(',', '.'))
-            if 1.01 <= val <= 30:
-                found.append(round(val, 2))
-        except Exception:
-            pass
-    return found
+def match_team_name(api_name, user_name):
+    a = norm(api_name)
+    b = norm(user_name)
+    return b in a or a in b
 
 
-def try_sts_public_odds(home_team, away_team):
-    urls = [
-        'https://www.sts.pl/szukaj/?q=' + urllib.parse.quote(home_team + ' ' + away_team),
-        'https://www.sts.pl/zaklady-bukmacherskie/pilka-nozna/?q=' + urllib.parse.quote(home_team + ' ' + away_team)
-    ]
+def get_best_h2h_from_event(event, bookmaker_filter='Rynek'):
+    best = {'home': None, 'draw': None, 'away': None, 'bookmaker': ''}
 
-    home_n = norm(home_team)
-    away_n = norm(away_team)
+    bookmakers = event.get('bookmakers', [])
+    if not bookmakers:
+        return None
 
-    for url in urls:
-        text, err = http_text(url)
-        if not text:
+    selected = []
+
+    if bookmaker_filter and bookmaker_filter.lower() not in ['rynek', 'market', '']:
+        target = bookmaker_filter.lower()
+        for b in bookmakers:
+            title = (b.get('title') or '').lower()
+            key = (b.get('key') or '').lower()
+            if target in title or target in key:
+                selected.append(b)
+
+    if not selected:
+        selected = bookmakers
+
+    home_team = event.get('home_team', '')
+    away_team = event.get('away_team', '')
+
+    candidates = []
+
+    for book in selected:
+        for market in book.get('markets', []):
+            if market.get('key') != 'h2h':
+                continue
+
+            odds_map = {}
+            for outcome in market.get('outcomes', []):
+                name = outcome.get('name', '')
+                price = outcome.get('price')
+                if price is None:
+                    continue
+
+                if name == home_team:
+                    odds_map['home'] = float(price)
+                elif name == away_team:
+                    odds_map['away'] = float(price)
+                elif name.lower() == 'draw':
+                    odds_map['draw'] = float(price)
+
+            if odds_map.get('home') and odds_map.get('draw') and odds_map.get('away'):
+                candidates.append({
+                    'home': odds_map['home'],
+                    'draw': odds_map['draw'],
+                    'away': odds_map['away'],
+                    'bookmaker': book.get('title') or book.get('key') or 'bookmaker'
+                })
+
+    if not candidates:
+        return None
+
+    # Jeśli wybrano Rynek, wybierz najlepsze dostępne kursy z różnych bukmacherów.
+    if bookmaker_filter.lower() in ['rynek', 'market', '']:
+        best_home = max(c['home'] for c in candidates)
+        best_draw = max(c['draw'] for c in candidates)
+        best_away = max(c['away'] for c in candidates)
+        return {
+            'home': round(best_home, 2),
+            'draw': round(best_draw, 2),
+            'away': round(best_away, 2),
+            'bookmaker': 'Najlepszy rynek / The Odds API'
+        }
+
+    return {
+        'home': round(candidates[0]['home'], 2),
+        'draw': round(candidates[0]['draw'], 2),
+        'away': round(candidates[0]['away'], 2),
+        'bookmaker': candidates[0]['bookmaker'] + ' / The Odds API'
+    }
+
+
+def fetch_the_odds_api(home_team, away_team, bookmaker, api_key):
+    if not api_key:
+        return {
+            'ok': False,
+            'source': 'The Odds API',
+            'error': 'Brak klucza API. Wklej darmowy API key.'
+        }
+
+    last_error = ''
+
+    for sport_key in SPORT_KEYS:
+        url = (
+            'https://api.the-odds-api.com/v4/sports/' + sport_key + '/odds/?' +
+            urllib.parse.urlencode({
+                'apiKey': api_key,
+                'regions': 'eu,uk',
+                'markets': 'h2h',
+                'oddsFormat': 'decimal'
+            })
+        )
+
+        data, err = http_json(url)
+        if err:
+            last_error = err
             continue
 
-        text_n = norm(text)
-        if home_n not in text_n or away_n not in text_n:
+        if not isinstance(data, list):
             continue
 
-        odds = parse_odds(text)
-        if len(odds) >= 3:
+        for event in data:
+            h = event.get('home_team', '')
+            a = event.get('away_team', '')
+
+            direct = match_team_name(h, home_team) and match_team_name(a, away_team)
+            reverse = match_team_name(h, away_team) and match_team_name(a, home_team)
+
+            if not direct and not reverse:
+                continue
+
+            odds = get_best_h2h_from_event(event, bookmaker)
+            if not odds:
+                continue
+
+            if reverse:
+                # Jeśli API ma odwrócone gospodarza/gościa względem wpisu użytkownika.
+                odds['home'], odds['away'] = odds['away'], odds['home']
+
             return {
                 'ok': True,
-                'odds_1': odds[0],
-                'odds_x': odds[1],
-                'odds_2': odds[2],
-                'source': 'STS public parser'
+                'odds_1': odds['home'],
+                'odds_x': odds['draw'],
+                'odds_2': odds['away'],
+                'source': odds['bookmaker'],
+                'sport_key': sport_key,
+                'api_home': h,
+                'api_away': a
             }
 
     return {
         'ok': False,
-        'source': 'STS public parser',
-        'error': 'Nie znaleziono pewnego kursu STS.'
+        'source': 'The Odds API',
+        'error': last_error or 'Nie znaleziono meczu/kursów w aktualnych ligach.'
     }
 
 
@@ -173,33 +286,29 @@ def fetch_stats(home_team, away_team, city):
     return v
 
 
-def fetch_odds(home_team, away_team, bookmaker):
+def fetch_odds(home_team, away_team, bookmaker, api_key):
     v = default_values()
     v['home_team'] = home_team
     v['away_team'] = away_team
     v['bookmaker'] = bookmaker
+    v['odds_api_key'] = api_key
 
-    if bookmaker == 'STS':
-        res = try_sts_public_odds(home_team, away_team)
-        if res['ok']:
-            v['odds_1'] = res['odds_1']
-            v['odds_x'] = res['odds_x']
-            v['odds_2'] = res['odds_2']
-            v['odds'] = res['odds_1']
-            v['odds_source'] = res['source']
-            v['message'] = 'Kursy STS pobrane z publicznej oferty. Zweryfikuj przed grą.'
-            v['sources'] = res['source']
-            v['confidence'] = 72
-            return v
+    res = fetch_the_odds_api(home_team, away_team, bookmaker, api_key)
 
-        v['message'] = 'Nie udało się pewnie pobrać aktualnych kursów STS. Zostają pola ręczne.'
-        v['odds_source'] = 'STS: brak pewnego kursu publicznego'
-        v['sources'] = 'STS parser'
+    if res.get('ok'):
+        v['odds_1'] = res['odds_1']
+        v['odds_x'] = res['odds_x']
+        v['odds_2'] = res['odds_2']
+        v['odds'] = res['odds_1']
+        v['odds_source'] = res['source']
+        v['message'] = 'Kursy pobrane z The Odds API. Sprawdź, czy bukmacher i mecz zgadzają się z Twoją ofertą.'
+        v['sources'] = res['source'] + ' | ' + res.get('sport_key', '')
+        v['confidence'] = 78
         return v
 
-    v['message'] = 'Parser dla tego bukmachera nie jest jeszcze podłączony.'
-    v['odds_source'] = bookmaker + ': brak parsera'
-    v['sources'] = bookmaker
+    v['message'] = 'Nie udało się pobrać aktualnych kursów z API. ' + res.get('error', '')
+    v['odds_source'] = res.get('source', 'brak')
+    v['sources'] = res.get('source', 'brak')
     return v
 
 
@@ -401,7 +510,7 @@ def page(v=None, result=None, history_rows=None):
 
     html = '<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Quantum Edge</title><meta name="viewport" content="width=device-width, initial-scale=1.0">' + css + '</head><body><div class="app">'
     html += '<header><div class="logo">⚛ QUANTUM <span>EDGE</span></div><div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div></header>'
-    html += '<section class="card hero"><div class="label">ANALIZA MECZU</div><h1>Quantum Edge Web MVP</h1><p>⚡ pobiera statystyki. 💰 próbuje pobrać publiczne kursy STS bez logowania. Jeśli nie znajdzie pewnego kursu, zostawia korektę ręczną.</p></section>'
+    html += '<section class="card hero"><div class="label">ANALIZA MECZU</div><h1>Quantum Edge Web MVP</h1><p>⚡ pobiera statystyki. 💰 pobiera aktualne kursy z The Odds API, jeśli wkleisz darmowy klucz API.</p></section>'
     html += result_box(result, v)
     html += fetched_box(v)
     html += history_box(history_rows)
@@ -411,7 +520,8 @@ def page(v=None, result=None, history_rows=None):
     html += '<label>Gospodarz<input name="home_team" required value="{}" placeholder="Fiorentina"></label>'.format(esc(v['home_team']))
     html += '<label>Gość<input name="away_team" required value="{}" placeholder="Atalanta"></label>'.format(esc(v['away_team']))
     html += '<label>Miasto meczu / pogoda<input name="city" value="{}" placeholder="Florencja"></label>'.format(esc(v['city']))
-    html += '<label>Bukmacher<select name="bookmaker"><option>STS</option><option>Betclic</option><option>Fortuna</option><option>Superbet</option><option>Rynek</option></select></label>'
+    html += '<label>Źródło / bukmacher<select name="bookmaker"><option>Rynek</option><option>bet365</option><option>Betfair</option><option>Unibet</option><option>William Hill</option><option>STS</option><option>Betclic</option><option>Fortuna</option><option>Superbet</option></select></label>'
+    html += '<label>API key kursów<input name="odds_api_key" value="{}" placeholder="The Odds API key"></label>'.format(esc(v.get('odds_api_key', '')))
     html += '</div></form>'
 
     html += '<form action="/analyze" method="post" class="card">'
@@ -435,11 +545,12 @@ def home():
 
 
 @app.post('/fetch', response_class=HTMLResponse)
-def fetch(home_team: str = Form(...), away_team: str = Form(...), city: str = Form(''), bookmaker: str = Form('STS'), mode: str = Form('stats')):
+def fetch(home_team: str = Form(...), away_team: str = Form(...), city: str = Form(''), bookmaker: str = Form('Rynek'), mode: str = Form('stats'), odds_api_key: str = Form('')):
     if mode == 'odds':
-        v = fetch_odds(home_team, away_team, bookmaker)
+        v = fetch_odds(home_team, away_team, bookmaker, odds_api_key)
     else:
         v = fetch_stats(home_team, away_team, city)
+        v['odds_api_key'] = odds_api_key
     return page(v=v)
 
 
