@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Quantum Edge MVP</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+    <header>
+        <div class="logo">⚛ QUANTUM <span>EDGE</span></div>
+        <a href="/history" class="history-link">Historia</a>
+    </header>
+
+    <section class="card hero">
+        <div>
+            <div class="label">ANALIZA MECZU</div>
+            <h1>Quantum Edge Web MVP</h1>
+            <p>Wpisz dane meczu, a model policzy probability, value i exact score.</p>
+        </div>
+    </section>
+
+    {% if result %}
+    <section class="card result">
+        <div class="match">{{ home_team }} <span>vs</span> {{ away_team }}</div>
+        <div class="grid-3">
+            <div>
+                <small>Typ</small>
+                <strong>{{ result.pick }}</strong>
+            </div>
+            <div>
+                <small>Probability</small>
+                <strong>{{ result.probability }}%</strong>
+            </div>
+            <div>
+                <small>Value</small>
+                <strong>{{ result.value_edge }} pp</strong>
+            </div>
+        </div>
+
+        <div class="rating">{{ result.rating }}</div>
+
+        <div class="stats">
+            <div><span>Fair odds</span><b>{{ result.fair_odds }}</b></div>
+            <div><span>Kurs</span><b>{{ odds }}</b></div>
+            <div><span>Chaos risk</span><b>{{ result.chaos }}/100</b></div>
+            <div><span>Exact score</span><b>{{ result.exact_score }}</b></div>
+            <div><span>Suma xG</span><b>{{ result.total_xg }}</b></div>
+            <div><span>Strzały</span><b>{{ result.shots_total }}</b></div>
+            <div><span>Celne</span><b>{{ result.sot_total }}</b></div>
+            <div><span>Rożne</span><b>{{ result.corners_total }}</b></div>
+            <div><span>Kartki</span><b>{{ result.cards_total }}</b></div>
+        </div>
+    </section>
+    {% endif %}
+
+    <form action="/analyze" method="post" class="card form">
+        <h2>Dane meczu</h2>
+
+        <div class="two">
+            <label>Gospodarz<input name="home_team" required placeholder="Fiorentina"></label>
+            <label>Gość<input name="away_team" required placeholder="Atalanta"></label>
+        </div>
+
+        <h3>xG / forma</h3>
+        <div class="two">
+            <label>xG gospodarz<input type="number" step="0.01" name="xg_home" value="1.25"></label>
+            <label>xG gość<input type="number" step="0.01" name="xg_away" value="0.95"></label>
+            <label>Forma gospodarz<input type="number" step="1" name="form_home" value="60"></label>
+            <label>Forma gość<input type="number" step="1" name="form_away" value="55"></label>
+        </div>
+
+        <h3>Statystyki</h3>
+        <div class="two">
+            <label>Tempo 0-100<input type="number" step="1" name="tempo" value="50"></label>
+            <label>Kurs bukmachera<input type="number" step="0.01" name="odds" value="1.75"></label>
+            <label>Strzały gospodarz<input type="number" step="0.1" name="shots_home" value="11"></label>
+            <label>Strzały gość<input type="number" step="0.1" name="shots_away" value="10"></label>
+            <label>Celne gospodarz<input type="number" step="0.1" name="sot_home" value="4"></label>
+            <label>Celne gość<input type="number" step="0.1" name="sot_away" value="3"></label>
+            <label>Rożne gospodarz<input type="number" step="0.1" name="corners_home" value="5"></label>
+            <label>Rożne gość<input type="number" step="0.1" name="corners_away" value="4"></label>
+            <label>Kartki gospodarz<input type="number" step="0.1" name="cards_home" value="2"></label>
+            <label>Kartki gość<input type="number" step="0.1" name="cards_away" value="2"></label>
+        </div>
+
+        <h3>Flow / ryzyko</h3>
+        <div class="two">
+            <label>Defensive control<input type="number" step="1" name="defensive_control" value="60"></label>
+            <label>Akceptacja remisu<input type="number" step="1" name="draw_acceptance" value="55"></label>
+            <label>Collapse gospodarz<input type="number" step="1" name="collapse_home" value="35"></label>
+            <label>Collapse gość<input type="number" step="1" name="collapse_away" value="40"></label>
+            <label>Absencje / rotacje<input type="number" step="1" name="absences" value="25"></label>
+            <label>Pogoda<input type="number" step="1" name="weather" value="15"></label>
+            <label>Rynek / kursy<input type="number" step="1" name="market_risk" value="25"></label>
+        </div>
+
+        <button type="submit">Analizuj mecz</button>
+    </form>
+</div>
+</body>
+</html>

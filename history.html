@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Historia — Quantum Edge</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+    <header>
+        <div class="logo">⚛ QUANTUM <span>EDGE</span></div>
+        <a href="/" class="history-link">Analiza</a>
+    </header>
+
+    <section class="card">
+        <h1>Historia analiz</h1>
+        {% for r in rows %}
+        <div class="history-row">
+            <div>
+                <b>{{ r.home_team }} vs {{ r.away_team }}</b>
+                <small>{{ r.created_at }}</small>
+            </div>
+            <div>{{ r.pick }}</div>
+            <div>{{ r.probability }}%</div>
+            <div>{{ r.value_edge }} pp</div>
+            <div>{{ r.rating }}</div>
+        </div>
+        {% endfor %}
+    </section>
+</div>
+</body>
+</html>
