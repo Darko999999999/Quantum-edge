@@ -1,15 +1,9 @@
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 import sqlite3
 from datetime import datetime
 
 app = FastAPI(title="Quantum Edge Web MVP")
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
 DB_PATH = "quantum_edge.db"
 
 
@@ -35,16 +29,17 @@ def init_db():
     conn.close()
 
 
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
 def fair_odds(probability):
-    if probability <= 0:
-        return 0
-    return round(100 / probability, 2)
+    return round(100 / probability, 2) if probability > 0 else 0
 
 
 def value_edge(probability, odds):
-    if odds <= 1:
-        return 0
-    return round(probability - (100 / odds), 2)
+    return round(probability - (100 / odds), 2) if odds > 1 else 0
 
 
 def choose_pick(xg_home, xg_away, tempo, defensive_control, chaos):
@@ -137,13 +132,13 @@ def calculate_model(data):
     pick, exact = choose_pick(xg_home, xg_away, tempo, defensive_control, chaos)
 
     if edge > 5 and probability >= 60 and chaos <= 45:
-        rating = "🔥 TOP VALUE"
+        rating = "TOP VALUE"
     elif edge > 2 and probability >= 60 and chaos <= 55:
-        rating = "✅ MOCNY TYP"
+        rating = "MOCNY TYP"
     elif edge > 0 and probability >= 57:
-        rating = "⚠️ LEKKIE VALUE"
+        rating = "LEKKIE VALUE"
     else:
-        rating = "❌ BRAK VALUE"
+        rating = "BRAK VALUE"
 
     return {
         "pick": pick,
@@ -161,19 +156,198 @@ def calculate_model(data):
     }
 
 
-@app.on_event("startup")
-def startup():
-    init_db()
+def page(result=None, history=None, home_team="", away_team="", odds=1.75):
+    result_html = ""
+
+    if result:
+        result_html = f"""
+        <section class="card result">
+            <div class="match">{home_team} <span>vs</span> {away_team}</div>
+            <div class="grid-3">
+                <div><small>Typ</small><strong>{result['pick']}</strong></div>
+                <div><small>Probability</small><strong>{result['probability']}%</strong></div>
+                <div><small>Value</small><strong>{result['value_edge']} pp</strong></div>
+            </div>
+            <div class="rating">{result['rating']}</div>
+            <div class="stats">
+                <div><span>Fair odds</span><b>{result['fair_odds']}</b></div>
+                <div><span>Kurs</span><b>{odds}</b></div>
+                <div><span>Chaos risk</span><b>{result['chaos']}/100</b></div>
+                <div><span>Exact score</span><b>{result['exact_score']}</b></div>
+                <div><span>Suma xG</span><b>{result['total_xg']}</b></div>
+                <div><span>Strzały</span><b>{result['shots_total']}</b></div>
+                <div><span>Celne</span><b>{result['sot_total']}</b></div>
+                <div><span>Rożne</span><b>{result['corners_total']}</b></div>
+                <div><span>Kartki</span><b>{result['cards_total']}</b></div>
+            </div>
+        </section>
+        """
+
+    history_html = ""
+    if history:
+        rows = ""
+        for r in history:
+            rows += f"""
+            <div class="history-row">
+                <div><b>{r[2]} vs {r[3]}</b><small>{r[1]}</small></div>
+                <div>{r[4]}</div>
+                <div>{r[5]}%</div>
+                <div>{r[8]} pp</div>
+                <div>{r[10]}</div>
+            </div>
+            """
+        history_html = f"<section class='card'><h2>Historia analiz</h2>{rows}</section>"
+
+    return f"""
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Quantum Edge MVP</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+* {{ box-sizing: border-box; }}
+body {{
+    margin: 0;
+    background: radial-gradient(circle at top, #0f2435 0%, #050912 55%, #03060c 100%);
+    color: #f4f7fb;
+    font-family: Arial, Helvetica, sans-serif;
+}}
+.app {{ max-width: 760px; margin: 0 auto; padding: 18px; }}
+header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }}
+.logo {{ font-size: 24px; font-weight: 800; letter-spacing: 1px; }}
+.logo span {{ color: #90ff36; }}
+a {{ color: #90ff36; text-decoration: none; }}
+.nav a {{ margin-left: 12px; border: 1px solid #30445b; padding: 8px 12px; border-radius: 12px; }}
+.card {{
+    background: rgba(12, 22, 36, 0.92);
+    border: 1px solid #22344c;
+    border-radius: 18px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 14px 38px rgba(0,0,0,0.32);
+}}
+.hero h1 {{ margin: 8px 0; font-size: 26px; }}
+.label {{ color: #90ff36; font-size: 13px; font-weight: bold; }}
+.match {{ text-align: center; font-size: 22px; font-weight: bold; margin-bottom: 16px; }}
+.match span {{ color: #91a0b5; font-size: 14px; margin: 0 10px; }}
+.grid-3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 16px; }}
+.grid-3 div {{ background: #091221; border: 1px solid #22344c; border-radius: 14px; padding: 12px; }}
+small {{ display: block; color: #98a7ba; margin-bottom: 6px; }}
+strong {{ color: #90ff36; font-size: 22px; }}
+.rating {{
+    text-align: center;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(144,255,54,0.10);
+    border: 1px solid rgba(144,255,54,0.35);
+    color: #90ff36;
+    font-weight: bold;
+    margin-bottom: 14px;
+}}
+.stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
+.stats div {{ display: flex; justify-content: space-between; background: #08111e; border-radius: 12px; padding: 10px; }}
+.stats span {{ color: #98a7ba; }}
+.two {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+label {{ display: flex; flex-direction: column; color: #cbd6e3; font-size: 14px; gap: 6px; }}
+input {{
+    width: 100%;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid #2d4058;
+    background: #07101d;
+    color: white;
+    font-size: 16px;
+}}
+button {{
+    width: 100%;
+    margin-top: 18px;
+    padding: 15px;
+    border: none;
+    border-radius: 16px;
+    background: #90ff36;
+    color: #07101d;
+    font-weight: 800;
+    font-size: 17px;
+}}
+.history-row {{
+    display: grid;
+    grid-template-columns: 2fr 1.2fr 0.7fr 0.8fr 1fr;
+    gap: 8px;
+    padding: 12px 0;
+    border-bottom: 1px solid #22344c;
+    align-items: center;
+}}
+@media (max-width: 560px) {{
+    .app {{ padding: 14px; }}
+    .two, .grid-3, .stats, .history-row {{ grid-template-columns: 1fr; }}
+}}
+</style>
+</head>
+<body>
+<div class="app">
+<header>
+    <div class="logo">⚛ QUANTUM <span>EDGE</span></div>
+    <div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div>
+</header>
+<section class="card hero">
+    <div class="label">ANALIZA MECZU</div>
+    <h1>Quantum Edge Web MVP</h1>
+    <p>Wpisz dane meczu, a model policzy probability, value i exact score.</p>
+</section>
+{result_html}
+{history_html}
+<form action="/analyze" method="post" class="card">
+    <h2>Dane meczu</h2>
+    <div class="two">
+        <label>Gospodarz<input name="home_team" required placeholder="Fiorentina"></label>
+        <label>Gość<input name="away_team" required placeholder="Atalanta"></label>
+    </div>
+    <h3>xG / forma</h3>
+    <div class="two">
+        <label>xG gospodarz<input type="number" step="0.01" name="xg_home" value="1.25"></label>
+        <label>xG gość<input type="number" step="0.01" name="xg_away" value="0.95"></label>
+        <label>Forma gospodarz<input type="number" step="1" name="form_home" value="60"></label>
+        <label>Forma gość<input type="number" step="1" name="form_away" value="55"></label>
+    </div>
+    <h3>Statystyki</h3>
+    <div class="two">
+        <label>Tempo 0-100<input type="number" step="1" name="tempo" value="50"></label>
+        <label>Kurs bukmachera<input type="number" step="0.01" name="odds" value="1.75"></label>
+        <label>Strzały gospodarz<input type="number" step="0.1" name="shots_home" value="11"></label>
+        <label>Strzały gość<input type="number" step="0.1" name="shots_away" value="10"></label>
+        <label>Celne gospodarz<input type="number" step="0.1" name="sot_home" value="4"></label>
+        <label>Celne gość<input type="number" step="0.1" name="sot_away" value="3"></label>
+        <label>Rożne gospodarz<input type="number" step="0.1" name="corners_home" value="5"></label>
+        <label>Rożne gość<input type="number" step="0.1" name="corners_away" value="4"></label>
+        <label>Kartki gospodarz<input type="number" step="0.1" name="cards_home" value="2"></label>
+        <label>Kartki gość<input type="number" step="0.1" name="cards_away" value="2"></label>
+    </div>
+    <h3>Flow / ryzyko</h3>
+    <div class="two">
+        <label>Defensive control<input type="number" step="1" name="defensive_control" value="60"></label>
+        <label>Akceptacja remisu<input type="number" step="1" name="draw_acceptance" value="55"></label>
+        <label>Collapse gospodarz<input type="number" step="1" name="collapse_home" value="35"></label>
+        <label>Collapse gość<input type="number" step="1" name="collapse_away" value="40"></label>
+        <label>Absencje / rotacje<input type="number" step="1" name="absences" value="25"></label>
+        <label>Pogoda<input type="number" step="1" name="weather" value="15"></label>
+        <label>Rynek / kursy<input type="number" step="1" name="market_risk" value="25"></label>
+    </div>
+    <button type="submit">Analizuj mecz</button>
+</form>
+</div>
+</body>
+</html>
+"""
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "result": None})
+def index():
+    return page()
 
 
 @app.post("/analyze", response_class=HTMLResponse)
 def analyze(
-    request: Request,
     home_team: str = Form(...),
     away_team: str = Form(...),
     xg_home: float = Form(1.25),
@@ -200,7 +374,6 @@ def analyze(
 ):
     data = locals()
     result = calculate_model(data)
-
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
@@ -222,23 +395,14 @@ def analyze(
     ))
     conn.commit()
     conn.close()
-
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "result": result,
-        "home_team": home_team,
-        "away_team": away_team,
-        "odds": odds
-    })
+    return page(result=result, home_team=home_team, away_team=away_team, odds=odds)
 
 
 @app.get("/history", response_class=HTMLResponse)
-def history(request: Request):
+def history():
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM analyses ORDER BY id DESC LIMIT 50")
     rows = c.fetchall()
     conn.close()
-
-    return templates.TemplateResponse("history.html", {"request": request, "rows": rows})
+    return page(history=rows)
