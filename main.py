@@ -626,4 +626,115 @@ button.main {{
         <label>Rożne gospodarz<input type="number" step="0.1" name="corners_home" value="{v['corners_home']}"></label>
         <label>Rożne gość<input type="number" step="0.1" name="corners_away" value="{v['corners_away']}"></label>
         <label>Kartki gospodarz<input type="number" step="0.1" name="cards_home" value="{v['cards_home']}"></label>
-        <label>Kartki gość<input type="number" step="0.1" name="c
+        <label>Kartki gość<input type="number" step="0.1" name="cards_away" value="{v['cards_away']}"></label>
+    </div>
+
+    <h3>Flow / ryzyko</h3>
+    <div class="two">
+        <label>Defensive control<input type="number" step="1" name="defensive_control" value="{v['defensive_control']}"></label>
+        <label>Akceptacja remisu<input type="number" step="1" name="draw_acceptance" value="{v['draw_acceptance']}"></label>
+        <label>Collapse gospodarz<input type="number" step="1" name="collapse_home" value="{v['collapse_home']}"></label>
+        <label>Collapse gość<input type="number" step="1" name="collapse_away" value="{v['collapse_away']}"></label>
+        <label>Absencje / rotacje<input type="number" step="1" name="absences" value="{v['absences']}"></label>
+        <label>Pogoda<input type="number" step="1" name="weather" value="{v['weather']}"></label>
+        <label>Rynek / kursy<input type="number" step="1" name="market_risk" value="{v['market_risk']}"></label>
+    </div>
+
+    <button class="main" type="submit">Analizuj mecz</button>
+</form>
+</div>
+</body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return page()
+
+
+@app.post("/fetch", response_class=HTMLResponse)
+def fetch(home_team: str = Form(...), away_team: str = Form(...)):
+    values = default_values()
+    values["home_team"] = fixed_name(home_team)
+    values["away_team"] = fixed_name(away_team)
+
+    fetched = fetch_stats(home_team, away_team)
+
+    for key in [
+        "home_team", "away_team", "xg_home", "xg_away", "form_home", "form_away",
+        "shots_home", "shots_away", "sot_home", "sot_away", "corners_home",
+        "corners_away", "cards_home", "cards_away", "tempo"
+    ]:
+        values[key] = fetched.get(key, values[key])
+
+    return page(values=values, fetched=fetched)
+
+
+@app.post("/analyze", response_class=HTMLResponse)
+def analyze(
+    home_team: str = Form(...),
+    away_team: str = Form(...),
+    xg_home: float = Form(1.25),
+    xg_away: float = Form(0.95),
+    form_home: float = Form(60),
+    form_away: float = Form(55),
+    tempo: float = Form(50),
+    shots_home: float = Form(11),
+    shots_away: float = Form(10),
+    sot_home: float = Form(4),
+    sot_away: float = Form(3),
+    corners_home: float = Form(5),
+    corners_away: float = Form(4),
+    cards_home: float = Form(2),
+    cards_away: float = Form(2),
+    defensive_control: float = Form(60),
+    draw_acceptance: float = Form(55),
+    collapse_home: float = Form(35),
+    collapse_away: float = Form(40),
+    absences: float = Form(25),
+    weather: float = Form(15),
+    market_risk: float = Form(25),
+    odds: float = Form(1.75),
+):
+    data = locals()
+    result = calculate_model(data)
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO analyses (
+            created_at, home_team, away_team, pick, probability, fair_odds,
+            bookmaker_odds, value_edge, exact_score, rating
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        home_team,
+        away_team,
+        result["pick"],
+        result["probability"],
+        result["fair_odds"],
+        odds,
+        result["value_edge"],
+        result["exact_score"],
+        result["rating"],
+    ))
+    conn.commit()
+    conn.close()
+
+    values = default_values()
+    for k in values:
+        if k in data:
+            values[k] = data[k]
+
+    return page(result=result, values=values)
+
+
+@app.get("/history", response_class=HTMLResponse)
+def history():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM analyses ORDER BY id DESC LIMIT 50")
+    rows = c.fetchall()
+    conn.close()
+    return page(history=rows)
