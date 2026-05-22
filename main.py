@@ -1,10 +1,44 @@
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Query
 from fastapi.responses import HTMLResponse
 import sqlite3
 from datetime import datetime
+import urllib.request
+import urllib.parse
+import json
+import re
 
 app = FastAPI(title="Quantum Edge Web MVP")
 DB_PATH = "quantum_edge.db"
+
+SOFA_BASE = "https://www.sofascore.com/api/v1"
+
+ALIASES = {
+    "nicea": "Nice",
+    "lens": "Lens",
+    "rc lens": "Lens",
+    "fiorentina": "Fiorentina",
+    "atalanta": "Atalanta",
+    "inter mediolan": "Inter",
+    "inter": "Inter",
+    "milan": "Milan",
+    "ac milan": "Milan",
+    "juventus": "Juventus",
+    "roma": "Roma",
+    "lazio": "Lazio",
+    "napoli": "Napoli",
+    "real": "Real Madrid",
+    "real madryt": "Real Madrid",
+    "barca": "Barcelona",
+    "barcelona": "Barcelona",
+    "bayern": "Bayern Munich",
+    "bayern monachium": "Bayern Munich",
+    "psg": "Paris Saint-Germain",
+    "paris": "Paris Saint-Germain",
+    "marsylia": "Marseille",
+    "marseille": "Marseille",
+    "lyon": "Lyon",
+    "monaco": "Monaco",
+}
 
 
 def init_db():
@@ -32,6 +66,478 @@ def init_db():
 @app.on_event("startup")
 def startup():
     init_db()
+
+
+def norm(txt):
+    return (txt or "").lower().replace(" ", "").replace("-", "").replace(".", "").replace("_", "")
+
+
+def fixed_name(txt):
+    return ALIASES.get((txt or "").strip().lower(), (txt or "").strip())
+
+
+def get_json(url, timeout=15):
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0")
+        req.add_header("Accept", "application/json,text/plain,*/*")
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def get_text(url, timeout=15):
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0")
+        req.add_header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return res.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def recursive_find_teams(obj, wanted):
+    found = []
+    wanted_n = norm(wanted)
+
+    if isinstance(obj, dict):
+        for key in ["entity", "team"]:
+            if key in obj and isinstance(obj[key], dict):
+                ent = obj[key]
+                if "name" in ent and "id" in ent:
+                    name = ent.get("name", "")
+                    if wanted_n in norm(name) or norm(name) in wanted_n:
+                        found.append(ent)
+
+        if "name" in obj and "id" in obj:
+            name = obj.get("name", "")
+            if wanted_n in norm(name) or norm(name) in wanted_n:
+                found.append(obj)
+
+        for v in obj.values():
+            found.extend(recursive_find_teams(v, wanted))
+
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(recursive_find_teams(item, wanted))
+
+    unique = []
+    seen = set()
+    for item in found:
+        iid = item.get("id")
+        name = item.get("name", "")
+        if iid and iid not in seen:
+            seen.add(iid)
+            unique.append({"id": iid, "name": name})
+
+    return unique
+
+
+def search_team_sofascore(name):
+    q = fixed_name(name)
+    urls = [
+        SOFA_BASE + "/search/all?q=" + urllib.parse.quote(q),
+        SOFA_BASE + "/search/teams?q=" + urllib.parse.quote(q),
+    ]
+
+    for url in urls:
+        data = get_json(url)
+        if not data:
+            continue
+        teams = recursive_find_teams(data, q)
+        if teams:
+            return teams[0]
+
+    return None
+
+
+def scheduled_events_sofascore(date_str):
+    data = get_json(SOFA_BASE + "/sport/football/scheduled-events/" + date_str)
+    if data and isinstance(data.get("events"), list):
+        return data["events"]
+    return []
+
+
+def team_last_events_sofascore(team_id):
+    urls = [
+        SOFA_BASE + "/team/" + str(team_id) + "/events/last/0",
+        SOFA_BASE + "/team/" + str(team_id) + "/events/last/1",
+    ]
+    for url in urls:
+        data = get_json(url)
+        if data and isinstance(data.get("events"), list):
+            return data["events"]
+    return []
+
+
+def form_from_events(events, team_id):
+    points = 0
+    gf = 0
+    ga = 0
+    count = 0
+    results = []
+
+    for ev in events[:5]:
+        h = ev.get("homeTeam", {})
+        a = ev.get("awayTeam", {})
+        hs = ev.get("homeScore", {}).get("current")
+        aas = ev.get("awayScore", {}).get("current")
+
+        if hs is None or aas is None:
+            continue
+
+        h_id = h.get("id")
+        a_id = a.get("id")
+
+        if h_id == team_id:
+            own = hs
+            opp = aas
+        elif a_id == team_id:
+            own = aas
+            opp = hs
+        else:
+            continue
+
+        gf += own
+        ga += opp
+        count += 1
+        results.append(h.get("name", "") + " " + str(hs) + ":" + str(aas) + " " + a.get("name", ""))
+
+        if own > opp:
+            points += 3
+        elif own == opp:
+            points += 1
+
+    if count == 0:
+        return None
+
+    return {
+        "form": round((points / (count * 3)) * 100, 1),
+        "gf": round(gf / count, 2),
+        "ga": round(ga / count, 2),
+        "results": results,
+    }
+
+
+def find_match_by_date_sofascore(home_name, away_name, date_str):
+    events = scheduled_events_sofascore(date_str)
+    home_n = norm(fixed_name(home_name))
+    away_n = norm(fixed_name(away_name))
+
+    for ev in events:
+        h = ev.get("homeTeam", {}).get("name", "")
+        a = ev.get("awayTeam", {}).get("name", "")
+        h_n = norm(h)
+        a_n = norm(a)
+
+        if (home_n in h_n or h_n in home_n) and (away_n in a_n or a_n in away_n):
+            return ev
+        if (home_n in a_n or a_n in home_n) and (away_n in h_n or h_n in away_n):
+            return ev
+    return None
+
+
+def match_statistics_sofascore(event_id):
+    urls = [
+        SOFA_BASE + "/event/" + str(event_id) + "/statistics",
+        SOFA_BASE + "/event/" + str(event_id) + "/statistics/0",
+    ]
+    for url in urls:
+        data = get_json(url)
+        if data:
+            return data
+    return None
+
+
+def h2h_events_sofascore(event_id):
+    data = get_json(SOFA_BASE + "/event/" + str(event_id) + "/h2h/events")
+    if data and isinstance(data.get("events"), list):
+        return data["events"]
+    return []
+
+
+def clean_number(val):
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    txt = str(val).replace("%", "").replace(",", ".").strip()
+    try:
+        return float(txt)
+    except Exception:
+        return None
+
+
+def extract_stat_value(stats_data, keywords, side):
+    side_keys = {
+        "home": ["home", "homeValue", "homeTeam"],
+        "away": ["away", "awayValue", "awayTeam"],
+    }
+
+    if isinstance(stats_data, dict):
+        for _, v in stats_data.items():
+            if isinstance(v, (dict, list)):
+                found = extract_stat_value(v, keywords, side)
+                if found is not None:
+                    return found
+
+    if isinstance(stats_data, list):
+        for item in stats_data:
+            if isinstance(item, dict):
+                name = str(item.get("name", item.get("type", item.get("key", "")))).lower()
+                if any(kw.lower() in name for kw in keywords):
+                    for sk in side_keys[side]:
+                        if sk in item:
+                            val = item.get(sk)
+                            if isinstance(val, dict):
+                                val = val.get("value")
+                            val = clean_number(val)
+                            if val is not None:
+                                return val
+
+                found = extract_stat_value(item, keywords, side)
+                if found is not None:
+                    return found
+    return None
+
+
+def understat_team_url(team_name):
+    # Understat ma tylko wybrane top ligi. To próba po nazwie drużyny.
+    slug = fixed_name(team_name).replace(" ", "_")
+    return "https://understat.com/team/" + urllib.parse.quote(slug)
+
+
+def fetch_understat_proxy(home_name, away_name):
+    out = {
+        "xg_home": None,
+        "xg_away": None,
+        "message": "",
+    }
+
+    # Understat często blokuje/zmienia strukturę, więc ten moduł działa jako miękki parser.
+    # Jeśli znajdzie JSON z xG, podmieni proxy. Jeśli nie, aplikacja zostawia dane z SofaScore/proxy.
+    msgs = []
+
+    for side, name in [("home", home_name), ("away", away_name)]:
+        html = get_text(understat_team_url(name), timeout=10)
+        if not html:
+            msgs.append(f"Understat: brak danych dla {name}.")
+            continue
+
+        # Szukamy wartości xG w zakodowanym JS. To prosty fallback, nie pełny parser.
+        matches = re.findall(r'"xG":"([0-9.]+)".*?"xGA":"([0-9.]+)"', html)
+        if matches:
+            try:
+                # ostatnie 5 wpisów
+                last = matches[-5:]
+                avg_xg = sum(float(x[0]) for x in last) / len(last)
+                if side == "home":
+                    out["xg_home"] = round(avg_xg, 2)
+                else:
+                    out["xg_away"] = round(avg_xg, 2)
+                msgs.append(f"Understat: pobrano xG dla {name}.")
+            except Exception:
+                msgs.append(f"Understat: nie udało się policzyć xG dla {name}.")
+        else:
+            msgs.append(f"Understat: nie znaleziono xG dla {name}.")
+
+    out["message"] = " ".join(msgs)
+    return out
+
+
+def geocode_city(city):
+    if not city:
+        return None
+    url = "https://geocoding-api.open-meteo.com/v1/search?name=" + urllib.parse.quote(city) + "&count=1&language=pl&format=json"
+    data = get_json(url, timeout=10)
+    if data and data.get("results"):
+        r = data["results"][0]
+        return r.get("latitude"), r.get("longitude"), r.get("name")
+    return None
+
+
+def fetch_weather(city, date_str):
+    geo = geocode_city(city)
+    if not geo:
+        return {"risk": 15, "message": "Pogoda: brak lokalizacji."}
+
+    lat, lon, city_name = geo
+    url = (
+        "https://api.open-meteo.com/v1/forecast?"
+        + urllib.parse.urlencode({
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max",
+            "timezone": "auto",
+            "start_date": date_str,
+            "end_date": date_str,
+        })
+    )
+    data = get_json(url, timeout=10)
+    if not data or not data.get("daily"):
+        return {"risk": 15, "message": "Pogoda: brak prognozy."}
+
+    d = data["daily"]
+    rain = (d.get("precipitation_sum") or [0])[0] or 0
+    wind = (d.get("windspeed_10m_max") or [0])[0] or 0
+    tmax = (d.get("temperature_2m_max") or [0])[0]
+    tmin = (d.get("temperature_2m_min") or [0])[0]
+
+    risk = 10
+    if rain >= 2:
+        risk += 10
+    if rain >= 6:
+        risk += 15
+    if wind >= 25:
+        risk += 10
+    if wind >= 40:
+        risk += 15
+    if tmax is not None and (tmax >= 32 or tmax <= 0):
+        risk += 10
+
+    risk = max(5, min(80, risk))
+    msg = f"Pogoda {city_name}: opad {rain} mm, wiatr {wind} km/h, temp. {tmin}-{tmax}°C. Ryzyko {risk}/100."
+    return {"risk": risk, "message": msg}
+
+
+def fetch_all_sources(home_input, away_input, date_str, city):
+    data = {
+        "home_team": home_input,
+        "away_team": away_input,
+        "xg_home": 1.25,
+        "xg_away": 0.95,
+        "form_home": 60,
+        "form_away": 55,
+        "shots_home": 11,
+        "shots_away": 10,
+        "sot_home": 4,
+        "sot_away": 3,
+        "corners_home": 5,
+        "corners_away": 4,
+        "cards_home": 2,
+        "cards_away": 2,
+        "tempo": 50,
+        "weather": 15,
+        "message": "",
+        "h2h": [],
+        "last_home": [],
+        "last_away": [],
+        "sources": [],
+    }
+
+    messages = []
+
+    home_team = search_team_sofascore(home_input)
+    away_team = search_team_sofascore(away_input)
+
+    fh = None
+    fa = None
+
+    if home_team:
+        data["home_team"] = home_team["name"]
+        home_events = team_last_events_sofascore(home_team["id"])
+        fh = form_from_events(home_events, home_team["id"])
+        if fh:
+            data["form_home"] = fh["form"]
+            data["last_home"] = fh["results"]
+        data["sources"].append("SofaScore: gospodarz")
+    else:
+        messages.append("SofaScore: nie znaleziono gospodarza.")
+
+    if away_team:
+        data["away_team"] = away_team["name"]
+        away_events = team_last_events_sofascore(away_team["id"])
+        fa = form_from_events(away_events, away_team["id"])
+        if fa:
+            data["form_away"] = fa["form"]
+            data["last_away"] = fa["results"]
+        data["sources"].append("SofaScore: gość")
+    else:
+        messages.append("SofaScore: nie znaleziono gościa.")
+
+    if fh and fa:
+        data["xg_home"] = round((fh["gf"] * 0.65) + (fa["ga"] * 0.35), 2)
+        data["xg_away"] = round((fa["gf"] * 0.65) + (fh["ga"] * 0.35), 2)
+        messages.append("SofaScore/proxy: policzono formę i xG proxy z ostatnich meczów.")
+
+    event = find_match_by_date_sofascore(home_input, away_input, date_str)
+
+    if event:
+        event_id = event.get("id")
+        data["home_team"] = event.get("homeTeam", {}).get("name", data["home_team"])
+        data["away_team"] = event.get("awayTeam", {}).get("name", data["away_team"])
+        data["sources"].append("SofaScore: mecz")
+
+        stats = match_statistics_sofascore(event_id)
+        if stats:
+            sh = extract_stat_value(stats, ["total shots", "shots"], "home")
+            sa = extract_stat_value(stats, ["total shots", "shots"], "away")
+            soh = extract_stat_value(stats, ["shots on target", "shots on goal"], "home")
+            soa = extract_stat_value(stats, ["shots on target", "shots on goal"], "away")
+            ch = extract_stat_value(stats, ["corner"], "home")
+            ca = extract_stat_value(stats, ["corner"], "away")
+            yh = extract_stat_value(stats, ["yellow cards"], "home")
+            ya = extract_stat_value(stats, ["yellow cards"], "away")
+
+            if sh is not None:
+                data["shots_home"] = sh
+            if sa is not None:
+                data["shots_away"] = sa
+            if soh is not None:
+                data["sot_home"] = soh
+            if soa is not None:
+                data["sot_away"] = soa
+            if ch is not None:
+                data["corners_home"] = ch
+            if ca is not None:
+                data["corners_away"] = ca
+            if yh is not None:
+                data["cards_home"] = yh
+            if ya is not None:
+                data["cards_away"] = ya
+
+            messages.append("SofaScore: pobrano dostępne statystyki meczu.")
+        else:
+            messages.append("SofaScore: mecz znaleziony, ale brak statystyk live/przedmeczowych.")
+
+        h2h = h2h_events_sofascore(event_id)
+        for ev in h2h[:5]:
+            h = ev.get("homeTeam", {}).get("name", "")
+            a = ev.get("awayTeam", {}).get("name", "")
+            hs = ev.get("homeScore", {}).get("current")
+            aas = ev.get("awayScore", {}).get("current")
+            data["h2h"].append(f"{h} {hs}:{aas} {a}")
+    else:
+        messages.append("SofaScore: nie znaleziono konkretnego meczu po dacie.")
+
+    under = fetch_understat_proxy(data["home_team"], data["away_team"])
+    if under["xg_home"] is not None:
+        data["xg_home"] = under["xg_home"]
+        data["sources"].append("Understat: xG gospodarz")
+    if under["xg_away"] is not None:
+        data["xg_away"] = under["xg_away"]
+        data["sources"].append("Understat: xG gość")
+    messages.append(under["message"])
+
+    weather = fetch_weather(city, date_str)
+    data["weather"] = weather["risk"]
+    data["sources"].append("Open-Meteo: pogoda")
+    messages.append(weather["message"])
+
+    # tempo proxy
+    total_shots = data["shots_home"] + data["shots_away"]
+    total_sot = data["sot_home"] + data["sot_away"]
+    if total_shots >= 25 or total_sot >= 9:
+        data["tempo"] = 62
+    elif total_shots <= 18 and total_sot <= 6:
+        data["tempo"] = 43
+    else:
+        data["tempo"] = 50
+
+    data["message"] = " ".join([m for m in messages if m])
+    return data
 
 
 def fair_odds(probability):
@@ -143,266 +649,4 @@ def calculate_model(data):
     return {
         "pick": pick,
         "exact_score": exact,
-        "probability": probability,
-        "fair_odds": fair,
-        "value_edge": edge,
-        "chaos": chaos,
-        "rating": rating,
-        "total_xg": round(total_xg, 2),
-        "shots_total": shots_total,
-        "sot_total": sot_total,
-        "corners_total": corners_total,
-        "cards_total": cards_total
-    }
-
-
-def page(result=None, history=None, home_team="", away_team="", odds=1.75):
-    result_html = ""
-
-    if result:
-        result_html = f"""
-        <section class="card result">
-            <div class="match">{home_team} <span>vs</span> {away_team}</div>
-            <div class="grid-3">
-                <div><small>Typ</small><strong>{result['pick']}</strong></div>
-                <div><small>Probability</small><strong>{result['probability']}%</strong></div>
-                <div><small>Value</small><strong>{result['value_edge']} pp</strong></div>
-            </div>
-            <div class="rating">{result['rating']}</div>
-            <div class="stats">
-                <div><span>Fair odds</span><b>{result['fair_odds']}</b></div>
-                <div><span>Kurs</span><b>{odds}</b></div>
-                <div><span>Chaos risk</span><b>{result['chaos']}/100</b></div>
-                <div><span>Exact score</span><b>{result['exact_score']}</b></div>
-                <div><span>Suma xG</span><b>{result['total_xg']}</b></div>
-                <div><span>Strzały</span><b>{result['shots_total']}</b></div>
-                <div><span>Celne</span><b>{result['sot_total']}</b></div>
-                <div><span>Rożne</span><b>{result['corners_total']}</b></div>
-                <div><span>Kartki</span><b>{result['cards_total']}</b></div>
-            </div>
-        </section>
-        """
-
-    history_html = ""
-    if history:
-        rows = ""
-        for r in history:
-            rows += f"""
-            <div class="history-row">
-                <div><b>{r[2]} vs {r[3]}</b><small>{r[1]}</small></div>
-                <div>{r[4]}</div>
-                <div>{r[5]}%</div>
-                <div>{r[8]} pp</div>
-                <div>{r[10]}</div>
-            </div>
-            """
-        history_html = f"<section class='card'><h2>Historia analiz</h2>{rows}</section>"
-
-    return f"""
-<!DOCTYPE html>
-<html lang="pl">
-<head>
-<meta charset="UTF-8">
-<title>Quantum Edge MVP</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-* {{ box-sizing: border-box; }}
-body {{
-    margin: 0;
-    background: radial-gradient(circle at top, #0f2435 0%, #050912 55%, #03060c 100%);
-    color: #f4f7fb;
-    font-family: Arial, Helvetica, sans-serif;
-}}
-.app {{ max-width: 760px; margin: 0 auto; padding: 18px; }}
-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }}
-.logo {{ font-size: 24px; font-weight: 800; letter-spacing: 1px; }}
-.logo span {{ color: #90ff36; }}
-a {{ color: #90ff36; text-decoration: none; }}
-.nav a {{ margin-left: 12px; border: 1px solid #30445b; padding: 8px 12px; border-radius: 12px; }}
-.card {{
-    background: rgba(12, 22, 36, 0.92);
-    border: 1px solid #22344c;
-    border-radius: 18px;
-    padding: 18px;
-    margin-bottom: 16px;
-    box-shadow: 0 14px 38px rgba(0,0,0,0.32);
-}}
-.hero h1 {{ margin: 8px 0; font-size: 26px; }}
-.label {{ color: #90ff36; font-size: 13px; font-weight: bold; }}
-.match {{ text-align: center; font-size: 22px; font-weight: bold; margin-bottom: 16px; }}
-.match span {{ color: #91a0b5; font-size: 14px; margin: 0 10px; }}
-.grid-3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 16px; }}
-.grid-3 div {{ background: #091221; border: 1px solid #22344c; border-radius: 14px; padding: 12px; }}
-small {{ display: block; color: #98a7ba; margin-bottom: 6px; }}
-strong {{ color: #90ff36; font-size: 22px; }}
-.rating {{
-    text-align: center;
-    padding: 12px;
-    border-radius: 14px;
-    background: rgba(144,255,54,0.10);
-    border: 1px solid rgba(144,255,54,0.35);
-    color: #90ff36;
-    font-weight: bold;
-    margin-bottom: 14px;
-}}
-.stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
-.stats div {{ display: flex; justify-content: space-between; background: #08111e; border-radius: 12px; padding: 10px; }}
-.stats span {{ color: #98a7ba; }}
-.two {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
-label {{ display: flex; flex-direction: column; color: #cbd6e3; font-size: 14px; gap: 6px; }}
-input {{
-    width: 100%;
-    padding: 12px;
-    border-radius: 12px;
-    border: 1px solid #2d4058;
-    background: #07101d;
-    color: white;
-    font-size: 16px;
-}}
-button {{
-    width: 100%;
-    margin-top: 18px;
-    padding: 15px;
-    border: none;
-    border-radius: 16px;
-    background: #90ff36;
-    color: #07101d;
-    font-weight: 800;
-    font-size: 17px;
-}}
-.history-row {{
-    display: grid;
-    grid-template-columns: 2fr 1.2fr 0.7fr 0.8fr 1fr;
-    gap: 8px;
-    padding: 12px 0;
-    border-bottom: 1px solid #22344c;
-    align-items: center;
-}}
-@media (max-width: 560px) {{
-    .app {{ padding: 14px; }}
-    .two, .grid-3, .stats, .history-row {{ grid-template-columns: 1fr; }}
-}}
-</style>
-</head>
-<body>
-<div class="app">
-<header>
-    <div class="logo">⚛ QUANTUM <span>EDGE</span></div>
-    <div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div>
-</header>
-<section class="card hero">
-    <div class="label">ANALIZA MECZU</div>
-    <h1>Quantum Edge Web MVP</h1>
-    <p>Wpisz dane meczu, a model policzy probability, value i exact score.</p>
-</section>
-{result_html}
-{history_html}
-<form action="/analyze" method="post" class="card">
-    <h2>Dane meczu</h2>
-    <div class="two">
-        <label>Gospodarz<input name="home_team" required placeholder="Fiorentina"></label>
-        <label>Gość<input name="away_team" required placeholder="Atalanta"></label>
-    </div>
-    <h3>xG / forma</h3>
-    <div class="two">
-        <label>xG gospodarz<input type="number" step="0.01" name="xg_home" value="1.25"></label>
-        <label>xG gość<input type="number" step="0.01" name="xg_away" value="0.95"></label>
-        <label>Forma gospodarz<input type="number" step="1" name="form_home" value="60"></label>
-        <label>Forma gość<input type="number" step="1" name="form_away" value="55"></label>
-    </div>
-    <h3>Statystyki</h3>
-    <div class="two">
-        <label>Tempo 0-100<input type="number" step="1" name="tempo" value="50"></label>
-        <label>Kurs bukmachera<input type="number" step="0.01" name="odds" value="1.75"></label>
-        <label>Strzały gospodarz<input type="number" step="0.1" name="shots_home" value="11"></label>
-        <label>Strzały gość<input type="number" step="0.1" name="shots_away" value="10"></label>
-        <label>Celne gospodarz<input type="number" step="0.1" name="sot_home" value="4"></label>
-        <label>Celne gość<input type="number" step="0.1" name="sot_away" value="3"></label>
-        <label>Rożne gospodarz<input type="number" step="0.1" name="corners_home" value="5"></label>
-        <label>Rożne gość<input type="number" step="0.1" name="corners_away" value="4"></label>
-        <label>Kartki gospodarz<input type="number" step="0.1" name="cards_home" value="2"></label>
-        <label>Kartki gość<input type="number" step="0.1" name="cards_away" value="2"></label>
-    </div>
-    <h3>Flow / ryzyko</h3>
-    <div class="two">
-        <label>Defensive control<input type="number" step="1" name="defensive_control" value="60"></label>
-        <label>Akceptacja remisu<input type="number" step="1" name="draw_acceptance" value="55"></label>
-        <label>Collapse gospodarz<input type="number" step="1" name="collapse_home" value="35"></label>
-        <label>Collapse gość<input type="number" step="1" name="collapse_away" value="40"></label>
-        <label>Absencje / rotacje<input type="number" step="1" name="absences" value="25"></label>
-        <label>Pogoda<input type="number" step="1" name="weather" value="15"></label>
-        <label>Rynek / kursy<input type="number" step="1" name="market_risk" value="25"></label>
-    </div>
-    <button type="submit">Analizuj mecz</button>
-</form>
-</div>
-</body>
-</html>
-"""
-
-
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return page()
-
-
-@app.post("/analyze", response_class=HTMLResponse)
-def analyze(
-    home_team: str = Form(...),
-    away_team: str = Form(...),
-    xg_home: float = Form(1.25),
-    xg_away: float = Form(0.95),
-    form_home: float = Form(60),
-    form_away: float = Form(55),
-    tempo: float = Form(50),
-    shots_home: float = Form(11),
-    shots_away: float = Form(10),
-    sot_home: float = Form(4),
-    sot_away: float = Form(3),
-    corners_home: float = Form(5),
-    corners_away: float = Form(4),
-    cards_home: float = Form(2),
-    cards_away: float = Form(2),
-    defensive_control: float = Form(60),
-    draw_acceptance: float = Form(55),
-    collapse_home: float = Form(35),
-    collapse_away: float = Form(40),
-    absences: float = Form(25),
-    weather: float = Form(15),
-    market_risk: float = Form(25),
-    odds: float = Form(1.75)
-):
-    data = locals()
-    result = calculate_model(data)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO analyses (
-            created_at, home_team, away_team, pick, probability, fair_odds,
-            bookmaker_odds, value_edge, exact_score, rating
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        home_team,
-        away_team,
-        result["pick"],
-        result["probability"],
-        result["fair_odds"],
-        odds,
-        result["value_edge"],
-        result["exact_score"],
-        result["rating"]
-    ))
-    conn.commit()
-    conn.close()
-    return page(result=result, home_team=home_team, away_team=away_team, odds=odds)
-
-
-@app.get("/history", response_class=HTMLResponse)
-def history():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM analyses ORDER BY id DESC LIMIT 50")
-    rows = c.fetchall()
-    conn.close()
-    return page(history=rows)
+      
