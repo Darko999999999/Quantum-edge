@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, Query
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 import sqlite3
 from datetime import datetime
