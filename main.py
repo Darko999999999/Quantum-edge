@@ -218,7 +218,7 @@ def default_values():
         'confidence': 60,
         'message': '',
         'sources': '',
-        'odds_api_key': ''
+        'odds_api_key': '4235b3c48084bdd173789f88b6ddadfd'
     }
 
 
