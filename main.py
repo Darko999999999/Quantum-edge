@@ -223,6 +223,40 @@ def default_values():
     }
 
 
+
+def current_values_from_form(**kwargs):
+    v = default_values()
+    for k, val in kwargs.items():
+        if k in v:
+            v[k] = val
+    return v
+
+
+STAT_KEYS = [
+    "home_team", "away_team", "city",
+    "xg_home", "xg_away", "form_home", "form_away", "tempo",
+    "shots_home", "shots_away", "sot_home", "sot_away",
+    "corners_home", "corners_away", "cards_home", "cards_away",
+    "btts", "over25", "confidence", "message", "sources",
+    "last_home", "last_away"
+]
+
+ODDS_KEYS = [
+    "home_team", "away_team", "bookmaker",
+    "odds", "odds_1", "odds_x", "odds_2",
+    "odds_source", "message", "sources", "confidence"
+]
+
+
+def merge_section(base, update, keys):
+    merged = dict(base)
+    for k in keys:
+        if k in update:
+            merged[k] = update[k]
+    return merged
+
+
+
 def http_text(url):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/csv,text/plain,*/*"})
@@ -747,6 +781,9 @@ def page(v=None, result=None, history_rows=None):
     html += f'<label>Gość<input name="away_team" required value="{esc(v["away_team"])}" placeholder="Atletico Bilbao"></label>'
     html += f'<label>Miasto meczu / pogoda<input name="city" value="{esc(v["city"])}" placeholder="Madryt"></label>'
     html += '<label>Źródło / bukmacher<select name="bookmaker"><option>Rynek</option><option>bet365</option><option>Betfair</option><option>Unibet</option><option>William Hill</option><option>STS</option><option>Betclic</option><option>Fortuna</option><option>Superbet</option></select></label>'
+    hidden_keys = ["xg_home","xg_away","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","defensive_control","draw_acceptance","collapse_home","collapse_away","absences","weather","market_risk","btts","over25","confidence","odds_source","last_home","last_away"]
+    for hk in hidden_keys:
+        html += f'<input type="hidden" name="{hk}" value="{esc(v.get(hk, ""))}">'
     html += '</div></form>'
 
     html += '<form action="/analyze" method="post" class="card">'
@@ -770,11 +807,54 @@ def home():
 
 
 @app.post("/fetch", response_class=HTMLResponse)
-def fetch(home_team: str = Form(...), away_team: str = Form(...), city: str = Form(""), bookmaker: str = Form("Rynek"), mode: str = Form("stats")):
+def fetch(
+    home_team: str = Form(...),
+    away_team: str = Form(...),
+    city: str = Form(""),
+    bookmaker: str = Form("Rynek"),
+    mode: str = Form("stats"),
+    xg_home: float = Form(0),
+    xg_away: float = Form(0),
+    form_home: float = Form(0),
+    form_away: float = Form(0),
+    tempo: float = Form(0),
+    odds: float = Form(1.75),
+    odds_1: float = Form(0),
+    odds_x: float = Form(0),
+    odds_2: float = Form(0),
+    shots_home: float = Form(0),
+    shots_away: float = Form(0),
+    sot_home: float = Form(0),
+    sot_away: float = Form(0),
+    corners_home: float = Form(0),
+    corners_away: float = Form(0),
+    cards_home: float = Form(0),
+    cards_away: float = Form(0),
+    defensive_control: float = Form(60),
+    draw_acceptance: float = Form(55),
+    collapse_home: float = Form(35),
+    collapse_away: float = Form(40),
+    absences: float = Form(25),
+    weather: float = Form(15),
+    market_risk: float = Form(25),
+    btts: float = Form(0),
+    over25: float = Form(0),
+    confidence: float = Form(0),
+    odds_source: str = Form("brak"),
+    last_home: str = Form(""),
+    last_away: str = Form(""),
+):
+    current = current_values_from_form(**locals())
+
     if mode == "odds":
-        v = fetch_odds(home_team, away_team, bookmaker)
+        update = fetch_odds(home_team, away_team, bookmaker)
+        v = merge_section(current, update, ODDS_KEYS)
     else:
-        v = calculate_real_stats(home_team, away_team, city)
+        update = calculate_real_stats(home_team, away_team, city)
+        v = merge_section(current, update, STAT_KEYS)
+
+    # Zachowaj nazwę bukmachera po każdym kliknięciu.
+    v["bookmaker"] = bookmaker
     return page(v=v)
 
 
