@@ -848,22 +848,92 @@ def flow_engine(v):
 def exact_score_engine(v, flow):
     xh = float(v.get("xg_home", 0) or 0)
     xa = float(v.get("xg_away", 0) or 0)
+
+    fh = float(v.get("form_home", 0) or 0)
+    fa = float(v.get("form_away", 0) or 0)
+    sh = float(v.get("shots_home", 0) or 0)
+    sa = float(v.get("shots_away", 0) or 0)
+    soth = float(v.get("sot_home", 0) or 0)
+    sota = float(v.get("sot_away", 0) or 0)
+    ch = float(v.get("corners_home", 0) or 0)
+    ca = float(v.get("corners_away", 0) or 0)
+    tempo = float(v.get("tempo", 0) or 0)
+    odds1 = float(v.get("odds_1", 0) or 0)
+    odds2 = float(v.get("odds_2", 0) or 0)
+
     chaos = flow["chaos"]
     control = flow["control"]
 
     if xh == 0 and xa == 0:
-        if control >= 65:
-            return {"control": "1:0 / 1:1", "value": "2:1", "chaos": "2:2", "note": "Brak realnego xG — wynik oparty na tempie/statystykach, nie na xG."}
-        return {"control": "1:1", "value": "2:1", "chaos": "2:2 / 3:2", "note": "Brak realnego xG — traktuj exact score jako scenariusz pomocniczy."}
+        power_home = (fh * 0.035) + (sh * 0.09) + (soth * 0.22) + (ch * 0.035)
+        power_away = (fa * 0.035) + (sa * 0.09) + (sota * 0.22) + (ca * 0.035)
 
-    total = xh + xa
-    if total <= 2.05 and control >= 60:
-        return {"control": "1:0 / 0:0", "value": "1:1", "chaos": "2:1", "note": "Dobry profil pod wynik kontrolowany i niski total."}
-    if total <= 2.55:
-        return {"control": "1:1", "value": "2:1", "chaos": "2:2", "note": "Profil średniego totalu — pierwszy gol mocno zmienia flow."}
-    if total <= 3.10:
-        return {"control": "2:1", "value": "2:2", "chaos": "3:2", "note": "Podwyższony total — większy sens wariantu value/chaos."}
-    return {"control": "2:2", "value": "3:2", "chaos": "3:3 / 4:2", "note": "Wysoki total — exact score mocno zależny od chaosu i skuteczności."}
+        if odds1 > 1:
+            power_home += max(0, 3.2 - odds1) * 0.25
+        if odds2 > 1:
+            power_away += max(0, 3.2 - odds2) * 0.25
+
+        base_home = max(0.45, min(2.6, power_home / 3.2))
+        base_away = max(0.35, min(2.4, power_away / 3.2))
+        note = "Brak realnego xG — exact score liczony zastępczo z formy, strzałów, celnych, tempa i kursów."
+    else:
+        base_home = xh
+        base_away = xa
+        note = "Exact score liczony z realnego xG oraz flow meczu."
+
+    diff = base_home - base_away
+    total = base_home + base_away
+
+    if control >= 68 and total <= 2.3:
+        if diff >= 0.35:
+            control_score = "1:0"
+            value_score = "2:0 / 2:1"
+            chaos_score = "2:2"
+        elif diff <= -0.35:
+            control_score = "0:1"
+            value_score = "1:2"
+            chaos_score = "2:2"
+        else:
+            control_score = "0:0 / 1:1"
+            value_score = "1:0 / 0:1"
+            chaos_score = "2:1 / 1:2"
+    elif chaos >= 64 or tempo >= 60:
+        if diff >= 0.45:
+            control_score = "2:1"
+            value_score = "3:1"
+            chaos_score = "3:2"
+        elif diff <= -0.45:
+            control_score = "1:2"
+            value_score = "1:3"
+            chaos_score = "2:3"
+        else:
+            control_score = "1:1"
+            value_score = "2:2"
+            chaos_score = "3:2 / 2:3"
+    else:
+        if diff >= 0.55:
+            control_score = "1:0 / 2:0"
+            value_score = "2:1"
+            chaos_score = "3:1"
+        elif diff <= -0.55:
+            control_score = "0:1 / 0:2"
+            value_score = "1:2"
+            chaos_score = "1:3"
+        elif total <= 2.2:
+            control_score = "1:1 / 0:0"
+            value_score = "1:0 / 0:1"
+            chaos_score = "2:1 / 1:2"
+        else:
+            control_score = "1:1"
+            value_score = "2:1 / 1:2"
+            chaos_score = "2:2"
+
+    return {
+        "control": control_score,
+        "value": value_score,
+        "chaos": chaos_score,
+        "note": note + " Siła modelu: " + str(round(base_home, 2)) + " - " + str(round(base_away, 2)) + "."
+    }
 
 
 def market_engine(v, result=None):
@@ -917,6 +987,11 @@ def bar(label, value, cls=""):
 
 
 def quantum_dashboard(v, result=None):
+    if result is None:
+        try:
+            result = calculate_model(v)
+        except Exception:
+            result = None
     flow = flow_engine(v)
     exact = exact_score_engine(v, flow)
     market = market_engine(v, result)
