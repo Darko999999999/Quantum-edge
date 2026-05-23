@@ -54,6 +54,14 @@ FOOTBALL_DATA_URLS = [
     "https://www.football-data.co.uk/mmz4281/2526/T1.csv",
 ]
 
+UNDERSTAT_LEAGUES = [
+    "EPL",
+    "La_liga",
+    "Serie_A",
+    "Bundesliga",
+    "Ligue_1",
+]
+
 POLISH_ALIASES = {
     "real madryt": "Real Madrid", "real": "Real Madrid",
     "atletico madryt": "Atletico Madrid", "atletico bilbao": "Athletic Bilbao",
@@ -220,6 +228,10 @@ def default_values():
         "sources": "",
         "last_home": "",
         "last_away": "",
+        "home_home_matches": "",
+        "home_away_matches": "",
+        "away_home_matches": "",
+        "away_away_matches": "",
     }
 
 
@@ -238,7 +250,7 @@ STAT_KEYS = [
     "shots_home", "shots_away", "sot_home", "sot_away",
     "corners_home", "corners_away", "cards_home", "cards_away",
     "btts", "over25", "confidence", "message", "sources",
-    "last_home", "last_away"
+    "last_home", "last_away", "home_home_matches", "home_away_matches", "away_home_matches", "away_away_matches"
 ]
 
 ODDS_KEYS = [
@@ -303,6 +315,95 @@ def team_side(row, team):
     if match_team(row.get("AwayTeam", ""), team):
         return "away"
     return None
+
+
+
+def understat_team_xg(home_team, away_team):
+    """
+    Pobiera sezonowe xG/xGA drużyn z Understat dla top 5 lig.
+    Jeśli nie znajdzie danych, zwraca 0/0 — bez udawania.
+    """
+    result = {"xg_home": 0, "xg_away": 0, "source": ""}
+
+    for league in UNDERSTAT_LEAGUES:
+        url = "https://understat.com/league/" + league
+        text, err = http_text(url)
+        if err or not text:
+            continue
+
+        m = re.search(r"teamsData\\s*=\\s*JSON\\.parse\\('(.+?)'\\)", text)
+        if not m:
+            continue
+
+        try:
+            raw = m.group(1)
+            raw = raw.encode("utf-8").decode("unicode_escape")
+            data = json.loads(raw)
+        except Exception:
+            continue
+
+        found_home = None
+        found_away = None
+
+        for _, team in data.items():
+            title = team.get("title", "")
+            history = team.get("history", [])
+            if not history:
+                continue
+
+            xg_sum = 0
+            xga_sum = 0
+            n = 0
+            for item in history[-5:]:
+                xg_sum += safe_float(item.get("xG"))
+                xga_sum += safe_float(item.get("xGA"))
+                n += 1
+
+            if n == 0:
+                continue
+
+            avg_xg = round(xg_sum / n, 2)
+            avg_xga = round(xga_sum / n, 2)
+
+            if match_team(title, home_team):
+                found_home = {"team": title, "xg": avg_xg, "xga": avg_xga}
+            if match_team(title, away_team):
+                found_away = {"team": title, "xg": avg_xg, "xga": avg_xga}
+
+        if found_home or found_away:
+            if found_home:
+                result["xg_home"] = found_home["xg"]
+            if found_away:
+                result["xg_away"] = found_away["xg"]
+            result["source"] = "Understat " + league
+            return result
+
+    return result
+
+
+def team_home_away_matches(rows, team):
+    home_matches = []
+    away_matches = []
+
+    for r in rows:
+        if safe_int(r.get("FTHG")) is None or safe_int(r.get("FTAG")) is None:
+            continue
+
+        ht = r.get("HomeTeam", "")
+        at = r.get("AwayTeam", "")
+        hg = safe_int(r.get("FTHG")) or 0
+        ag = safe_int(r.get("FTAG")) or 0
+
+        if match_team(ht, team):
+            home_matches.append(f"{ht} {hg}:{ag} {at}")
+        elif match_team(at, team):
+            away_matches.append(f"{ht} {hg}:{ag} {at}")
+
+    return {
+        "home": " | ".join(home_matches[-5:]),
+        "away": " | ".join(away_matches[-5:]),
+    }
+
 
 
 def load_football_data_rows(home_team, away_team):
@@ -422,9 +523,17 @@ def calculate_real_stats(home_team, away_team, city=""):
     else:
         messages.append("brak statystyk gościa")
 
-    # UWAGA: Football-Data nie ma xG. Nie udajemy xG.
-    v["xg_home"] = 0
-    v["xg_away"] = 0
+    # Football-Data nie ma xG, więc próbujemy Understat. Jeśli brak danych, zostaje 0.
+    uxg = understat_team_xg(home, away)
+    v["xg_home"] = uxg.get("xg_home", 0)
+    v["xg_away"] = uxg.get("xg_away", 0)
+
+    splits_home = team_home_away_matches(rows, home)
+    splits_away = team_home_away_matches(rows, away)
+    v["home_home_matches"] = splits_home["home"]
+    v["home_away_matches"] = splits_home["away"]
+    v["away_home_matches"] = splits_away["home"]
+    v["away_away_matches"] = splits_away["away"]
 
     total_shots = float(v["shots_home"]) + float(v["shots_away"])
     total_sot = float(v["sot_home"]) + float(v["sot_away"])
@@ -444,8 +553,12 @@ def calculate_real_stats(home_team, away_team, city=""):
     else:
         v["confidence"] = 35
 
-    v["message"] = "Realne statystyki pobrane z Football-Data. xG nie zostało wpisane, bo to źródło nie udostępnia xG."
-    v["sources"] = "Football-Data " + source + " | " + ", ".join(messages)
+    if v["xg_home"] or v["xg_away"]:
+        v["message"] = "Realne statystyki pobrane z Football-Data + xG z Understat."
+    else:
+        v["message"] = "Realne statystyki pobrane z Football-Data. xG zostaje 0, bo Understat nie znalazł tej drużyny/ligi."
+    extra_xg = (" | " + uxg.get("source", "")) if uxg.get("source") else ""
+    v["sources"] = "Football-Data " + source + extra_xg + " | " + ", ".join(messages)
     return v
 
 
@@ -676,10 +789,12 @@ def mini_stats(v):
     html += f'<div><span>Confidence</span><b>{v["confidence"]}%</b></div>'
     html += f'<div><span>Tempo</span><b>{v["tempo"]}/100</b></div>'
     html += '</div>'
-    if v.get("last_home"):
-        html += '<div class="mini"><b>Ostatnie mecze gospodarza</b><p>' + esc(v["last_home"]) + '</p></div>'
-    if v.get("last_away"):
-        html += '<div class="mini"><b>Ostatnie mecze gościa</b><p>' + esc(v["last_away"]) + '</p></div>'
+    html += '<div class="match-grid">'
+    html += '<div class="mini"><b>Gospodarz — u siebie</b><p>' + esc(v.get("home_home_matches", "") or "brak danych") + '</p></div>'
+    html += '<div class="mini"><b>Gospodarz — wyjazd</b><p>' + esc(v.get("home_away_matches", "") or "brak danych") + '</p></div>'
+    html += '<div class="mini"><b>Gość — u siebie</b><p>' + esc(v.get("away_home_matches", "") or "brak danych") + '</p></div>'
+    html += '<div class="mini"><b>Gość — wyjazd</b><p>' + esc(v.get("away_away_matches", "") or "brak danych") + '</p></div>'
+    html += '</div>'
     return html
 
 
@@ -764,7 +879,8 @@ def page(v=None, result=None, history_rows=None):
     .history-row{display:grid;grid-template-columns:2fr 1.2fr .7fr .8fr 1fr;gap:8px;padding:12px 0;border-bottom:1px solid #22344c;align-items:center}
     .mini{background:#08111e;padding:12px;border-radius:12px;margin-top:10px}
     .mini p{color:#cbd6e3;font-size:13px;line-height:1.5}
-    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row{grid-template-columns:1fr}}
+    .match-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row,.match-grid{grid-template-columns:1fr}}
     </style>
     """
 
@@ -781,7 +897,7 @@ def page(v=None, result=None, history_rows=None):
     html += f'<label>Gość<input name="away_team" required value="{esc(v["away_team"])}" placeholder="Atletico Bilbao"></label>'
     html += f'<label>Miasto meczu / pogoda<input name="city" value="{esc(v["city"])}" placeholder="Madryt"></label>'
     html += '<label>Źródło / bukmacher<select name="bookmaker"><option>Rynek</option><option>bet365</option><option>Betfair</option><option>Unibet</option><option>William Hill</option><option>STS</option><option>Betclic</option><option>Fortuna</option><option>Superbet</option></select></label>'
-    hidden_keys = ["xg_home","xg_away","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","defensive_control","draw_acceptance","collapse_home","collapse_away","absences","weather","market_risk","btts","over25","confidence","odds_source","last_home","last_away"]
+    hidden_keys = ["xg_home","xg_away","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","defensive_control","draw_acceptance","collapse_home","collapse_away","absences","weather","market_risk","btts","over25","confidence","odds_source","last_home","last_away","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
     for hk in hidden_keys:
         html += f'<input type="hidden" name="{hk}" value="{esc(v.get(hk, ""))}">'
     html += '</div></form>'
@@ -843,6 +959,10 @@ def fetch(
     odds_source: str = Form("brak"),
     last_home: str = Form(""),
     last_away: str = Form(""),
+    home_home_matches: str = Form(""),
+    home_away_matches: str = Form(""),
+    away_home_matches: str = Form(""),
+    away_away_matches: str = Form(""),
 ):
     current = current_values_from_form(**locals())
 
