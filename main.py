@@ -6,6 +6,7 @@ import urllib.request
 import urllib.parse
 import json
 import re
+import difflib
 
 app = FastAPI(title='Quantum Edge Web')
 DB_PATH = 'quantum_edge.db'
@@ -37,16 +38,130 @@ init_db()
 
 
 SPORT_KEYS = [
+    'soccer_epl',
+    'soccer_england_championship',
+    'soccer_spain_la_liga',
     'soccer_italy_serie_a',
+    'soccer_germany_bundesliga',
     'soccer_france_ligue_one',
     'soccer_france_ligue_two',
-    'soccer_epl',
-    'soccer_spain_la_liga',
-    'soccer_germany_bundesliga',
+    'soccer_netherlands_eredivisie',
+    'soccer_portugal_primeira_liga',
+    'soccer_scotland_premiership',
+    'soccer_belgium_first_div',
+    'soccer_austria_bundesliga',
+    'soccer_turkey_super_league',
+    'soccer_greece_super_league',
+    'soccer_denmark_superliga',
+    'soccer_sweden_allsvenskan',
+    'soccer_norway_eliteserien',
+    'soccer_switzerland_superleague',
+    'soccer_poland_ekstraklasa',
     'soccer_uefa_champs_league',
     'soccer_uefa_europa_league',
     'soccer_uefa_europa_conference_league'
 ]
+
+
+POLISH_ALIASES = {
+    "real madryt": "Real Madrid", "real": "Real Madrid",
+    "atletico madryt": "Atletico Madrid", "atletico bilbao": "Athletic Bilbao",
+    "athletic bilbao": "Athletic Bilbao", "ath bilbao": "Athletic Bilbao",
+    "barca": "Barcelona", "barcelona": "Barcelona",
+    "betis": "Real Betis", "real betis": "Real Betis",
+    "real sociedad": "Real Sociedad", "sevilla": "Sevilla",
+    "walencja": "Valencia", "valencia": "Valencia", "villarreal": "Villarreal",
+    "girona": "Girona", "osasuna": "Osasuna", "mallorca": "Mallorca",
+    "celta": "Celta Vigo", "celta vigo": "Celta Vigo",
+
+    "manchester city": "Manchester City", "man city": "Manchester City",
+    "manchester united": "Manchester United", "man utd": "Manchester United",
+    "arsenal": "Arsenal", "liverpool": "Liverpool", "chelsea": "Chelsea",
+    "tottenham": "Tottenham Hotspur", "spurs": "Tottenham Hotspur",
+    "newcastle": "Newcastle United", "aston villa": "Aston Villa",
+    "west ham": "West Ham United", "brighton": "Brighton and Hove Albion",
+    "everton": "Everton", "wolves": "Wolverhampton Wanderers",
+    "wolverhampton": "Wolverhampton Wanderers", "leicester": "Leicester City",
+    "crystal palace": "Crystal Palace", "nottingham": "Nottingham Forest",
+    "bournemouth": "Bournemouth", "fulham": "Fulham",
+
+    "inter": "Inter Milan", "inter mediolan": "Inter Milan",
+    "ac milan": "AC Milan", "milan": "AC Milan", "juventus": "Juventus",
+    "roma": "Roma", "lazio": "Lazio", "napoli": "Napoli",
+    "atalanta": "Atalanta", "fiorentina": "Fiorentina", "bologna": "Bologna",
+    "torino": "Torino", "udinese": "Udinese", "genoa": "Genoa",
+    "verona": "Hellas Verona", "hellas verona": "Hellas Verona",
+    "lecce": "Lecce", "sassuolo": "Sassuolo", "parma": "Parma",
+    "cagliari": "Cagliari", "empoli": "Empoli",
+
+    "bayern": "Bayern Munich", "bayern monachium": "Bayern Munich",
+    "borussia dortmund": "Borussia Dortmund", "dortmund": "Borussia Dortmund",
+    "rb lipsk": "RB Leipzig", "rb leipzig": "RB Leipzig", "leipzig": "RB Leipzig",
+    "bayer leverkusen": "Bayer Leverkusen", "leverkusen": "Bayer Leverkusen",
+    "eintracht": "Eintracht Frankfurt", "eintracht frankfurt": "Eintracht Frankfurt",
+    "wolfsburg": "Wolfsburg", "stuttgart": "VfB Stuttgart",
+    "union berlin": "Union Berlin", "freiburg": "SC Freiburg",
+    "mainz": "Mainz", "werder": "Werder Bremen", "werder brema": "Werder Bremen",
+    "hoffenheim": "Hoffenheim", "augsburg": "Augsburg",
+    "gladbach": "Borussia Monchengladbach",
+    "borussia monchengladbach": "Borussia Monchengladbach",
+
+    "psg": "Paris Saint-Germain", "paris sg": "Paris Saint-Germain",
+    "paris saint germain": "Paris Saint-Germain", "marsylia": "Marseille",
+    "marseille": "Marseille", "lyon": "Lyon", "olympique lyon": "Lyon",
+    "lens": "Lens", "rc lens": "Lens", "nice": "Nice", "nicea": "Nice",
+    "ogc nice": "Nice", "monaco": "Monaco", "lille": "Lille",
+    "rennes": "Rennes", "nantes": "Nantes", "strasbourg": "Strasbourg",
+    "toulouse": "Toulouse", "montpellier": "Montpellier", "reims": "Reims",
+    "brest": "Brest",
+
+    "lech": "Lech Poznan", "lech poznan": "Lech Poznan", "lech poznań": "Lech Poznan",
+    "legia": "Legia Warsaw", "legia warszawa": "Legia Warsaw",
+    "rakow": "Rakow Czestochowa", "raków": "Rakow Czestochowa",
+    "jagiellonia": "Jagiellonia Bialystok",
+    "pogon": "Pogon Szczecin", "pogoń": "Pogon Szczecin",
+    "slask": "Slask Wroclaw", "śląsk": "Slask Wroclaw",
+    "widzew": "Widzew Lodz", "gornik": "Gornik Zabrze",
+    "górnik": "Gornik Zabrze", "radomiak": "Radomiak Radom",
+    "cracovia": "Cracovia", "piast": "Piast Gliwice",
+    "zagłębie": "Zaglebie Lubin", "zaglebie": "Zaglebie Lubin",
+
+    "ajax": "Ajax", "psv": "PSV Eindhoven", "feyenoord": "Feyenoord",
+    "az alkmaar": "AZ Alkmaar", "twente": "Twente", "utrecht": "Utrecht",
+
+    "benfica": "Benfica", "porto": "Porto", "fc porto": "Porto",
+    "sporting": "Sporting CP", "sporting lizbona": "Sporting CP",
+    "braga": "Braga", "guimaraes": "Vitoria Guimaraes",
+
+    "celtic": "Celtic", "rangers": "Rangers", "hearts": "Hearts",
+    "hibernian": "Hibernian", "aberdeen": "Aberdeen",
+
+    "galatasaray": "Galatasaray", "fenerbahce": "Fenerbahce",
+    "fenerbahçe": "Fenerbahce", "besiktas": "Besiktas",
+    "beşiktaş": "Besiktas", "trabzonspor": "Trabzonspor",
+    "basaksehir": "Istanbul Basaksehir",
+
+    "club brugge": "Club Brugge", "anderlecht": "Anderlecht",
+    "genk": "Genk", "gent": "Gent",
+    "royal union": "Union Saint-Gilloise",
+    "union saint gilloise": "Union Saint-Gilloise",
+    "standard liege": "Standard Liege",
+
+    "salzburg": "Red Bull Salzburg", "rb salzburg": "Red Bull Salzburg",
+    "rapid wieden": "Rapid Vienna", "rapid vienna": "Rapid Vienna",
+    "austria wieden": "Austria Vienna",
+    "young boys": "Young Boys", "basel": "Basel", "zurich": "FC Zurich",
+    "slavia praga": "Slavia Prague", "sparta praga": "Sparta Prague",
+    "victoria pilzno": "Viktoria Plzen", "viktoria plzen": "Viktoria Plzen",
+    "olympiacos": "Olympiacos", "paok": "PAOK", "aek": "AEK Athens",
+    "panathinaikos": "Panathinaikos",
+    "szachtar": "Shakhtar Donetsk", "shakhtar": "Shakhtar Donetsk",
+    "dynamo kijow": "Dynamo Kyiv", "dynamo kyiv": "Dynamo Kyiv",
+    "fc copenhagen": "FC Copenhagen", "kopenhaga": "FC Copenhagen",
+    "brondby": "Brondby", "malmo": "Malmo FF", "mälmo": "Malmo FF",
+    "rosenborg": "Rosenborg", "bodo glimt": "Bodo/Glimt",
+    "bodø glimt": "Bodo/Glimt"
+}
 
 
 def esc(x):
@@ -54,7 +169,17 @@ def esc(x):
 
 
 def norm(x):
-    return (x or '').lower().replace(' ', '').replace('-', '').replace('.', '').replace('_', '').replace("'", '')
+    return (x or '').lower().replace(' ', '').replace('-', '').replace('.', '').replace('_', '').replace("'", '').replace('ą','a').replace('ć','c').replace('ę','e').replace('ł','l').replace('ń','n').replace('ó','o').replace('ś','s').replace('ż','z').replace('ź','z')
+
+
+def normalize_team_name(name):
+    key = (name or '').strip().lower()
+    key_clean = key.replace('ą','a').replace('ć','c').replace('ę','e').replace('ł','l').replace('ń','n').replace('ó','o').replace('ś','s').replace('ż','z').replace('ź','z')
+    if key in POLISH_ALIASES:
+        return POLISH_ALIASES[key]
+    if key_clean in POLISH_ALIASES:
+        return POLISH_ALIASES[key_clean]
+    return (name or '').strip()
 
 
 def default_values():
@@ -113,9 +238,17 @@ def http_json(url):
 
 
 def match_team_name(api_name, user_name):
-    a = norm(api_name)
-    b = norm(user_name)
-    return b in a or a in b
+    api_norm = norm(api_name)
+    user_norm = norm(normalize_team_name(user_name))
+
+    if not api_norm or not user_norm:
+        return False
+
+    if user_norm in api_norm or api_norm in user_norm:
+        return True
+
+    similarity = difflib.SequenceMatcher(None, api_norm, user_norm).ratio()
+    return similarity >= 0.62
 
 
 def get_best_h2h_from_event(event, bookmaker_filter='Rynek'):
@@ -194,6 +327,9 @@ def get_best_h2h_from_event(event, bookmaker_filter='Rynek'):
 
 
 def fetch_the_odds_api(home_team, away_team, bookmaker, api_key):
+    home_team = normalize_team_name(home_team)
+    away_team = normalize_team_name(away_team)
+
     if not api_key:
         return {
             'ok': False,
@@ -288,8 +424,8 @@ def fetch_stats(home_team, away_team, city):
 
 def fetch_odds(home_team, away_team, bookmaker, api_key):
     v = default_values()
-    v['home_team'] = home_team
-    v['away_team'] = away_team
+    v['home_team'] = normalize_team_name(home_team)
+    v['away_team'] = normalize_team_name(away_team)
     v['bookmaker'] = bookmaker
     v['odds_api_key'] = api_key
 
@@ -301,7 +437,7 @@ def fetch_odds(home_team, away_team, bookmaker, api_key):
         v['odds_2'] = res['odds_2']
         v['odds'] = res['odds_1']
         v['odds_source'] = res['source']
-        v['message'] = 'Kursy pobrane z The Odds API. Sprawdź, czy bukmacher i mecz zgadzają się z Twoją ofertą.'
+        v['message'] = 'Kursy pobrane z The Odds API. Dopasowany mecz: ' + res.get('api_home', '') + ' vs ' + res.get('api_away', '') + '. Sprawdź zgodność z Twoją ofertą.'
         v['sources'] = res['source'] + ' | ' + res.get('sport_key', '')
         v['confidence'] = 78
         return v
