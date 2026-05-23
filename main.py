@@ -790,183 +790,168 @@ def flow_engine(v):
     corners_total = float(v.get("corners_home", 0) or 0) + float(v.get("corners_away", 0) or 0)
     cards_total = float(v.get("cards_home", 0) or 0) + float(v.get("cards_away", 0) or 0)
     tempo = float(v.get("tempo", 0) or 0)
-    defensive = float(v.get("defensive_control", 60) or 60)
-    ch = float(v.get("collapse_home", 35) or 35)
-    ca = float(v.get("collapse_away", 40) or 40)
+    form_gap = abs(float(v.get("form_home", 0) or 0) - float(v.get("form_away", 0) or 0))
 
-    if xg_total > 0:
-        attack = clamp(xg_total * 23 + sot_total * 3)
-    else:
-        attack = clamp(shots_total * 2.2 + sot_total * 4)
+    control = 55
+    if xg_total and xg_total <= 2.3:
+        control += 12
+    if shots_total and shots_total <= 22:
+        control += 8
+    if tempo and tempo <= 50:
+        control += 8
+    if form_gap <= 15:
+        control += 5
+    if cards_total >= 5:
+        control -= 8
+    if corners_total >= 11:
+        control -= 5
 
-    control = clamp(72 - tempo * 0.45 - cards_total * 2 + defensive * 0.35)
-    chaos = clamp(tempo * 0.45 + cards_total * 5 + corners_total * 1.6 + ch * 0.15 + ca * 0.15)
-    collapse = clamp((ch + ca) / 2 + cards_total * 3 + tempo * 0.12)
-    draw_accept = clamp(float(v.get("draw_acceptance", 55) or 55) + (8 if xg_total and xg_total <= 2.2 else 0) - (8 if chaos > 65 else 0))
-    transition = clamp(attack * 0.45 + tempo * 0.35 + corners_total * 1.5)
+    chaos = 100 - control
+    if sot_total >= 9:
+        chaos += 8
+    if cards_total >= 5:
+        chaos += 8
+    if corners_total >= 11:
+        chaos += 5
 
-    if control >= 62 and chaos <= 55:
+    collapse_home = clamp(38 + float(v.get("cards_home", 0) or 0) * 6 - float(v.get("form_home", 0) or 0) * 0.12)
+    collapse_away = clamp(42 + float(v.get("cards_away", 0) or 0) * 6 - float(v.get("form_away", 0) or 0) * 0.12)
+
+    transition_home = clamp(45 + float(v.get("shots_home", 0) or 0) * 1.6 + float(v.get("sot_home", 0) or 0) * 2.2)
+    transition_away = clamp(45 + float(v.get("shots_away", 0) or 0) * 1.6 + float(v.get("sot_away", 0) or 0) * 2.2)
+
+    draw_acceptance = clamp(65 - form_gap * 0.8 - max(0, xg_total - 2.4) * 8)
+
+    if control >= 68:
         label = "CONTROL FLOW"
-        note = "Mecz wygląda stabilnie: większa szansa na kontrolowany wynik i niższą wariancję."
-    elif chaos >= 65:
+        summary = "Mecz wygląda stabilnie: niższy chaos, większa szansa na wynik kontrolowany."
+    elif chaos >= 62:
         label = "CHAOS FLOW"
-        note = "Wysoka zmienność: ryzyko szybkiej zmiany wyniku, transition football i bramek po momentum."
+        summary = "Mecz ma podwyższone ryzyko otwarcia, przejść i emocjonalnych zwrotów."
     else:
         label = "BALANCED FLOW"
-        note = "Mecz pośredni: możliwy scenariusz kontrolowany, ale z ryzykiem faz chaosu."
+        summary = "Scenariusz mieszany: możliwy kontrolowany początek i mocniejsze przejścia po pierwszym golu."
 
-    return {"control": round(control, 1), "chaos": round(chaos, 1), "collapse": round(collapse, 1), "draw": round(draw_accept, 1), "transition": round(transition, 1), "attack": round(attack, 1), "label": label, "note": note}
+    return {
+        "control": round(clamp(control), 1),
+        "chaos": round(clamp(chaos), 1),
+        "collapse_home": round(collapse_home, 1),
+        "collapse_away": round(collapse_away, 1),
+        "transition_home": round(transition_home, 1),
+        "transition_away": round(transition_away, 1),
+        "draw_acceptance": round(draw_acceptance, 1),
+        "label": label,
+        "summary": summary,
+    }
 
 
 def exact_score_engine(v, flow):
     xh = float(v.get("xg_home", 0) or 0)
     xa = float(v.get("xg_away", 0) or 0)
-    control = flow["control"]
     chaos = flow["chaos"]
-    draw = flow["draw"]
+    control = flow["control"]
 
     if xh == 0 and xa == 0:
-        sh = float(v.get("shots_home", 0) or 0)
-        sa = float(v.get("shots_away", 0) or 0)
-        if abs(sh - sa) <= 2 and draw >= 55:
-            return {"control": "1:1", "value": "1:0 / 0:1", "chaos": "2:2", "note": "Brak xG — wynik oparty na strzałach, tempie i flow."}
-        if sh >= sa:
-            return {"control": "1:0", "value": "2:1", "chaos": "2:2 / 3:2", "note": "Brak xG — przewaga gospodarza liczona ze statystyk."}
-        return {"control": "0:1", "value": "1:2", "chaos": "2:2 / 2:3", "note": "Brak xG — przewaga gościa liczona ze statystyk."}
+        if control >= 65:
+            return {"control": "1:0 / 1:1", "value": "2:1", "chaos": "2:2", "note": "Brak realnego xG — wynik oparty na tempie/statystykach, nie na xG."}
+        return {"control": "1:1", "value": "2:1", "chaos": "2:2 / 3:2", "note": "Brak realnego xG — traktuj exact score jako scenariusz pomocniczy."}
 
     total = xh + xa
-    diff = xh - xa
-
-    if control >= 62 and chaos <= 55:
-        if total <= 2.1 and abs(diff) < 0.35:
-            control_score = "0:0 / 1:1"
-        elif diff >= 0.35:
-            control_score = "1:0"
-        elif diff <= -0.35:
-            control_score = "0:1"
-        else:
-            control_score = "1:1"
-    else:
-        control_score = "1:1"
-
-    if diff >= 0.45:
-        value_score = "2:1"
-    elif diff <= -0.45:
-        value_score = "1:2"
-    elif total >= 2.7:
-        value_score = "2:2"
-    else:
-        value_score = "1:1"
-
-    if chaos >= 65:
-        chaos_score = "2:2 / 3:2 / 2:3"
-    elif diff >= 0.5:
-        chaos_score = "2:1 / 3:1"
-    elif diff <= -0.5:
-        chaos_score = "1:2 / 1:3"
-    else:
-        chaos_score = "2:2"
-
-    return {"control": control_score, "value": value_score, "chaos": chaos_score, "note": "Wyniki liczone z xG, tempa, chaosu i przewagi matchupowej."}
-
-
-def team_profiles(v, flow):
-    fh = float(v.get("form_home", 0) or 0)
-    fa = float(v.get("form_away", 0) or 0)
-    sh = float(v.get("shots_home", 0) or 0)
-    sa = float(v.get("shots_away", 0) or 0)
-    ch = float(v.get("collapse_home", 35) or 35)
-    ca = float(v.get("collapse_away", 40) or 40)
-
-    def profile(form, shots, collapse):
-        if collapse >= 60:
-            return "Collapse Team"
-        if flow["chaos"] >= 65 and shots >= 11:
-            return "Chaos / Transition Team"
-        if form >= 60 and flow["control"] >= 58:
-            return "Control Team"
-        if shots <= 9 and form < 50:
-            return "Reactive Team"
-        return "Balanced Team"
-
-    return {"home": profile(fh, sh, ch), "away": profile(fa, sa, ca)}
+    if total <= 2.05 and control >= 60:
+        return {"control": "1:0 / 0:0", "value": "1:1", "chaos": "2:1", "note": "Dobry profil pod wynik kontrolowany i niski total."}
+    if total <= 2.55:
+        return {"control": "1:1", "value": "2:1", "chaos": "2:2", "note": "Profil średniego totalu — pierwszy gol mocno zmienia flow."}
+    if total <= 3.10:
+        return {"control": "2:1", "value": "2:2", "chaos": "3:2", "note": "Podwyższony total — większy sens wariantu value/chaos."}
+    return {"control": "2:2", "value": "3:2", "chaos": "3:3 / 4:2", "note": "Wysoki total — exact score mocno zależny od chaosu i skuteczności."}
 
 
 def market_engine(v, result=None):
     odds = float(v.get("odds", 0) or 0)
     fair = result.get("fair_odds", 0) if result else 0
-    prob = result.get("probability", 0) if result else 0
     edge = result.get("value_edge", 0) if result else 0
 
     if odds <= 1:
-        return {"label": "NO ODDS", "note": "Brak kursu do oceny value.", "edge": 0, "fair": fair, "prob": prob}
-
-    if edge >= 5:
+        label = "BRAK KURSU"
+        note = "Brak kursu do realnej oceny value."
+    elif edge > 5:
         label = "VALUE FOUND"
-        note = "Kurs rynkowy jest wyraźnie wyższy niż fair odds modelu."
+        note = "Kurs jest wyższy niż fair odds modelu — potencjalne value."
     elif edge > 0:
         label = "SMALL VALUE"
-        note = "Jest lekkie value, ale wymaga kontroli ryzyka i rynku."
+        note = "Lekka przewaga, ale wymaga potwierdzenia rynku i składów."
     else:
         label = "NO VALUE"
-        note = "Brak przewagi kursowej względem prawdopodobieństwa modelu."
+        note = "Na tym kursie model nie widzi przewagi."
 
-    return {"label": label, "note": note, "edge": edge, "fair": fair, "prob": prob}
+    return {"label": label, "note": note, "fair": fair, "edge": edge}
 
 
-def bar(label, value, css=""):
+def team_profiles(v, flow):
+    def profile(form, shots, collapse):
+        if collapse >= 60:
+            return "COLLAPSE TEAM"
+        if shots >= 13 and form >= 55:
+            return "TRANSITION TEAM"
+        if form >= 60 and collapse <= 45:
+            return "CONTROL TEAM"
+        if shots <= 9:
+            return "REACTIVE TEAM"
+        return "BALANCED TEAM"
+
+    return {
+        "home": profile(float(v.get("form_home", 0) or 0), float(v.get("shots_home", 0) or 0), flow["collapse_home"]),
+        "away": profile(float(v.get("form_away", 0) or 0), float(v.get("shots_away", 0) or 0), flow["collapse_away"]),
+    }
+
+
+def bar(label, value, cls=""):
     value = clamp(value)
-    return f'<div class="barrow"><div class="barlabel">{esc(label)} <b>{value:.1f}%</b></div><div class="bar"><span class="{css}" style="width:{value}%"></span></div></div>'
+    return (
+        '<div class="bar-row">'
+        f'<div class="bar-label">{esc(label)} <b>{round(value,1)}%</b></div>'
+        '<div class="bar-bg">'
+        f'<div class="bar-fill {cls}" style="width:{value}%"></div>'
+        '</div></div>'
+    )
 
 
-def intelligence_dashboard(v, result=None):
+def quantum_dashboard(v, result=None):
     flow = flow_engine(v)
-    scores = exact_score_engine(v, flow)
-    profiles = team_profiles(v, flow)
+    exact = exact_score_engine(v, flow)
     market = market_engine(v, result)
+    profiles = team_profiles(v, flow)
 
-    html = '<section class="card dashboard-card">'
-    html += '<h2>🔥 Quantum Flow Engine</h2>'
-    html += f'<div class="flow-label">{esc(flow["label"])}</div>'
-    html += f'<p>{esc(flow["note"])}</p>'
-    html += bar("Control Flow", flow["control"], "good")
-    html += bar("Chaos Risk", flow["chaos"], "bad")
-    html += bar("Collapse Risk", flow["collapse"], "warn")
-    html += bar("Draw Acceptance", flow["draw"], "good")
-    html += bar("Transition Advantage", flow["transition"], "warn")
+    html = '<section class="card dashboard"><h2>🔥 Quantum Flow Engine</h2>'
+    html += f'<div class="flow-title">{esc(flow["label"])}</div><p class="muted">{esc(flow["summary"])}</p>'
+    html += bar("Control Flow", flow["control"], "green")
+    html += bar("Chaos Risk", flow["chaos"], "red")
+    html += bar("Draw Acceptance", flow["draw_acceptance"], "blue")
+    html += bar("Home Collapse Risk", flow["collapse_home"], "orange")
+    html += bar("Away Collapse Risk", flow["collapse_away"], "orange")
+    html += bar("Home Transition Power", flow["transition_home"], "purple")
+    html += bar("Away Transition Power", flow["transition_away"], "purple")
     html += '</section>'
 
-    html += '<section class="card dashboard-card">'
-    html += '<h2>⚽ Exact Score Engine</h2>'
-    html += '<div class="score-grid">'
-    html += f'<div><small>CONTROL</small><strong>{esc(scores["control"])}</strong></div>'
-    html += f'<div><small>VALUE</small><strong>{esc(scores["value"])}</strong></div>'
-    html += f'<div><small>CHAOS</small><strong>{esc(scores["chaos"])}</strong></div>'
-    html += '</div>'
-    html += f'<p>{esc(scores["note"])}</p>'
-    html += '</section>'
+    html += '<section class="card"><h2>⚽ Exact Score Engine</h2><div class="score-grid">'
+    html += f'<div class="score-card"><small>CONTROL</small><strong>{esc(exact["control"])}</strong></div>'
+    html += f'<div class="score-card"><small>VALUE</small><strong>{esc(exact["value"])}</strong></div>'
+    html += f'<div class="score-card chaos"><small>CHAOS</small><strong>{esc(exact["chaos"])}</strong></div>'
+    html += f'</div><p class="muted">{esc(exact["note"])}</p></section>'
 
-    html += '<section class="card dashboard-card">'
-    html += '<h2>📈 Market Intelligence</h2>'
-    html += f'<div class="flow-label market">{esc(market["label"])}</div>'
-    html += f'<p>{esc(market["note"])}</p>'
-    html += '<div class="stats">'
-    html += f'<div><span>Model probability</span><b>{market.get("prob", 0)}%</b></div>'
-    html += f'<div><span>Fair odds</span><b>{market.get("fair", 0)}</b></div>'
-    html += f'<div><span>Market odds</span><b>{v.get("odds", 0)}</b></div>'
-    html += f'<div><span>Value edge</span><b>{market.get("edge", 0)} pp</b></div>'
+    html += '<section class="card"><h2>📈 Market Intelligence</h2>'
+    html += f'<div class="market-label">{esc(market["label"])}</div><div class="stats">'
+    html += f'<div><span>Fair odds</span><b>{market["fair"]}</b></div>'
+    html += f'<div><span>Value edge</span><b>{market["edge"]} pp</b></div>'
+    html += f'<div><span>Kurs modelu</span><b>{v.get("odds", 0)}</b></div>'
+    html += f'<div><span>Źródło kursu</span><b>{esc(v.get("odds_source", "brak"))}</b></div>'
+    html += f'</div><p class="muted">{esc(market["note"])}</p></section>'
+
+    html += '<section class="card"><h2>🧠 Team Profiles</h2><div class="profile-grid">'
+    html += f'<div class="profile-card"><small>{esc(v.get("home_team","Gospodarz"))}</small><strong>{esc(profiles["home"])}</strong></div>'
+    html += f'<div class="profile-card"><small>{esc(v.get("away_team","Gość"))}</small><strong>{esc(profiles["away"])}</strong></div>'
     html += '</div></section>'
-
-    html += '<section class="card dashboard-card">'
-    html += '<h2>🧠 Team Profiles</h2>'
-    html += '<div class="score-grid">'
-    html += f'<div><small>{esc(v.get("home_team","Gospodarz"))}</small><strong>{esc(profiles["home"])}</strong></div>'
-    html += f'<div><small>{esc(v.get("away_team","Gość"))}</small><strong>{esc(profiles["away"])}</strong></div>'
-    html += '</div>'
-    html += '</section>'
-
     return html
-
 
 def mini_stats(v):
     html = '<div class="stats">'
@@ -1073,13 +1058,23 @@ def page(v=None, result=None, history_rows=None):
     .history-row{display:grid;grid-template-columns:2fr 1.2fr .7fr .8fr 1fr;gap:8px;padding:12px 0;border-bottom:1px solid #22344c;align-items:center}
     .mini{background:#08111e;padding:12px;border-radius:12px;margin-top:10px}
     .mini p{color:#cbd6e3;font-size:13px;line-height:1.5}
+    .flow-title,.market-label{font-size:18px;font-weight:800;color:#90ff36;margin:8px 0 10px}
+    .muted{color:#b8c4d6;line-height:1.5}
+    .bar-row{margin:12px 0}
+    .bar-label{display:flex;justify-content:space-between;color:#d9e5f5;font-size:14px;margin-bottom:6px}
+    .bar-bg{height:12px;background:#07101d;border:1px solid #263b55;border-radius:999px;overflow:hidden}
+    .bar-fill{height:100%;background:#90ff36;border-radius:999px}
+    .bar-fill.red{background:#ff4f6d}
+    .bar-fill.orange{background:#ffb347}
+    .bar-fill.blue{background:#49a7ff}
+    .bar-fill.purple{background:#b566ff}
+    .score-grid,.profile-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+    .profile-grid{grid-template-columns:1fr 1fr}
+    .score-card,.profile-card{background:#08111e;border:1px solid #22344c;border-radius:16px;padding:14px;text-align:center}
+    .score-card strong,.profile-card strong{display:block;color:#90ff36;font-size:22px;margin-top:8px}
+    .score-card.chaos strong{color:#ff4f6d}
     .match-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
-    .dashboard-card{border-color:rgba(144,255,54,.25)}
-    .flow-label{display:inline-block;padding:10px 14px;border-radius:14px;background:rgba(144,255,54,.12);border:1px solid rgba(144,255,54,.35);color:#90ff36;font-weight:800;margin-bottom:8px}
-    .flow-label.market{color:#b566ff;border-color:rgba(181,102,255,.45);background:rgba(181,102,255,.12)}
-    .barrow{margin:12px 0}.barlabel{display:flex;justify-content:space-between;color:#cbd6e3;font-size:14px;margin-bottom:5px}.bar{height:12px;background:#07101d;border-radius:20px;overflow:hidden;border:1px solid #22344c}.bar span{display:block;height:100%;background:#90ff36;border-radius:20px}.bar span.bad{background:#ff4d4d}.bar span.warn{background:#ffd24d}.bar span.good{background:#90ff36}
-    .score-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px}.score-grid div{background:#08111e;border:1px solid #22344c;border-radius:14px;padding:12px}.score-grid strong{font-size:18px}
-    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row,.match-grid,.score-grid{grid-template-columns:1fr}}
+    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row,.match-grid,.score-grid,.profile-grid{grid-template-columns:1fr}}
     </style>
     """
 
@@ -1087,8 +1082,9 @@ def page(v=None, result=None, history_rows=None):
     html += '<header><div class="logo">⚛ QUANTUM <span>EDGE</span></div><div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div></header>'
     html += '<section class="card hero"><div class="label">REAL DATA ENGINE</div><h1>Quantum Edge Web MVP</h1><p>⚡ pobiera realne statystyki z Football-Data. Jeśli brak danych, nie wpisuje fake/proxy. 💰 pobiera kursy z The Odds API.</p></section>'
     html += result_box(result, v)
-    html += intelligence_dashboard(v, result)
     html += fetched_box(v)
+    if v.get("home_team") or v.get("away_team"):
+        html += quantum_dashboard(v, result)
     html += history_box(history_rows)
 
     html += '<form action="/fetch" method="post" class="card"><div class="topline"><h2>Dane meczu</h2><div class="iconbar"><button class="roundbtn" name="mode" value="stats" type="submit">⚡</button><button class="roundbtn money" name="mode" value="odds" type="submit">💰</button></div></div>'
