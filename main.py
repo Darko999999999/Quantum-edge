@@ -1085,14 +1085,38 @@ def fetched_box(v):
 
 def history_box(rows):
     if not rows:
-        return ""
+        return (
+            '<section class="card">'
+            '<h2>Historia analiz</h2>'
+            '<p class="muted">Historia jest pusta. Najpierw wpisz mecz i kliknij „Analizuj mecz”. '
+            'Samo pobranie ⚡ albo 💰 nie zapisuje jeszcze analizy.</p>'
+            '<a class="backlink" href="/">← Wróć do analizy</a>'
+            '</section>'
+        )
+
     out = '<section class="card"><h2>Historia analiz</h2>'
+    out += '<p class="muted">Zapisane są tylko mecze, dla których kliknięto „Analizuj mecz”.</p>'
+    out += '<div class="hist-table">'
+    out += '<div class="hist-head"><span>Data</span><span>Mecz</span><span>Typ</span><span>Prob.</span><span>Kurs</span><span>Value</span><span>Exact</span><span>Ocena</span></div>'
+
     for row in rows:
-        out += '<div class="history-row">'
-        out += f'<div><b>{esc(row[2])} vs {esc(row[3])}</b><small>{esc(row[1])}</small></div>'
-        out += f'<div>{esc(row[4])}</div><div>{row[5]}%</div><div>{row[8]} pp</div><div>{esc(row[10])}</div>'
+        # row: id, created_at, home_team, away_team, pick, probability, fair_odds,
+        # bookmaker_odds, value_edge, exact_score, rating
+        out += '<div class="hist-row">'
+        out += f'<span>{esc(row[1])}</span>'
+        out += f'<span><b>{esc(row[2])}</b> vs <b>{esc(row[3])}</b></span>'
+        out += f'<span>{esc(row[4])}</span>'
+        out += f'<span>{row[5]}%</span>'
+        out += f'<span>{row[7]}</span>'
+        out += f'<span>{row[8]} pp</span>'
+        out += f'<span>{esc(row[9])}</span>'
+        out += f'<span>{esc(row[10])}</span>'
         out += '</div>'
-    return out + '</section>'
+
+    out += '</div>'
+    out += '<a class="backlink" href="/">← Wróć do analizy</a>'
+    out += '</section>'
+    return out
 
 
 def page(v=None, result=None, history_rows=None):
@@ -1133,6 +1157,12 @@ def page(v=None, result=None, history_rows=None):
     .history-row{display:grid;grid-template-columns:2fr 1.2fr .7fr .8fr 1fr;gap:8px;padding:12px 0;border-bottom:1px solid #22344c;align-items:center}
     .mini{background:#08111e;padding:12px;border-radius:12px;margin-top:10px}
     .mini p{color:#cbd6e3;font-size:13px;line-height:1.5}
+    .backlink{display:inline-block;margin-top:16px;padding:10px 14px;border:1px solid #30445b;border-radius:12px}
+    .hist-table{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+    .hist-head,.hist-row{display:grid;grid-template-columns:1.1fr 1.8fr 1.4fr .7fr .7fr .8fr 1.2fr 1fr;gap:8px;align-items:center}
+    .hist-head{color:#90ff36;font-weight:800;font-size:13px;border-bottom:1px solid #22344c;padding-bottom:8px}
+    .hist-row{background:#08111e;border:1px solid #22344c;border-radius:12px;padding:10px;font-size:13px}
+
     .flow-title,.market-label{font-size:18px;font-weight:800;color:#90ff36;margin:8px 0 10px}
     .muted{color:#b8c4d6;line-height:1.5}
     .bar-row{margin:12px 0}
@@ -1149,7 +1179,7 @@ def page(v=None, result=None, history_rows=None):
     .score-card strong,.profile-card strong{display:block;color:#90ff36;font-size:22px;margin-top:8px}
     .score-card.chaos strong{color:#ff4f6d}
     .match-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
-    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row,.match-grid,.score-grid,.profile-grid{grid-template-columns:1fr}}
+    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row,.match-grid,.score-grid,.profile-grid,.hist-head,.hist-row{grid-template-columns:1fr}}
     </style>
     """
 
@@ -1286,6 +1316,7 @@ def analyze(
 
     result = calculate_model(v)
 
+    init_db()
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute(
@@ -1300,9 +1331,10 @@ def analyze(
 
 @app.get("/history", response_class=HTMLResponse)
 def history():
+    init_db()
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("SELECT * FROM analyses ORDER BY id DESC LIMIT 50")
+    cur.execute("SELECT id, created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating FROM analyses ORDER BY id DESC LIMIT 100")
     rows = cur.fetchall()
     con.close()
     return page(history_rows=rows)
