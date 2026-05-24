@@ -145,6 +145,35 @@ LOGO_DOMAINS = {
 "dynamo kyiv":"fcdynamo.com"
 }
 
+
+# Mapa lig do szybkiego pobierania konkretnego pliku CSV zamiast skanowania wszystkich źródeł.
+LEAGUE_SOURCES = {
+    "england_premier_league": {"label": "England - Premier League", "url": "https://www.football-data.co.uk/mmz4281/2526/E0.csv"},
+    "england_championship": {"label": "England - Championship", "url": "https://www.football-data.co.uk/mmz4281/2526/E1.csv"},
+    "england_league_one": {"label": "England - League One", "url": "https://www.football-data.co.uk/mmz4281/2526/E2.csv"},
+    "england_league_two": {"label": "England - League Two", "url": "https://www.football-data.co.uk/mmz4281/2526/E3.csv"},
+
+    "spain_laliga": {"label": "Spain - La Liga", "url": "https://www.football-data.co.uk/mmz4281/2526/SP1.csv"},
+    "spain_laliga2": {"label": "Spain - La Liga 2", "url": "https://www.football-data.co.uk/mmz4281/2526/SP2.csv"},
+
+    "italy_serie_a": {"label": "Italy - Serie A", "url": "https://www.football-data.co.uk/mmz4281/2526/I1.csv"},
+    "italy_serie_b": {"label": "Italy - Serie B", "url": "https://www.football-data.co.uk/mmz4281/2526/I2.csv"},
+
+    "germany_bundesliga": {"label": "Germany - Bundesliga", "url": "https://www.football-data.co.uk/mmz4281/2526/D1.csv"},
+    "germany_bundesliga2": {"label": "Germany - 2. Bundesliga", "url": "https://www.football-data.co.uk/mmz4281/2526/D2.csv"},
+
+    "france_ligue1": {"label": "France - Ligue 1", "url": "https://www.football-data.co.uk/mmz4281/2526/F1.csv"},
+    "france_ligue2": {"label": "France - Ligue 2", "url": "https://www.football-data.co.uk/mmz4281/2526/F2.csv"},
+
+    "netherlands_eredivisie": {"label": "Netherlands - Eredivisie", "url": "https://www.football-data.co.uk/mmz4281/2526/N1.csv"},
+    "portugal_primeira": {"label": "Portugal - Primeira Liga", "url": "https://www.football-data.co.uk/mmz4281/2526/P1.csv"},
+    "scotland_premiership": {"label": "Scotland - Premiership", "url": "https://www.football-data.co.uk/mmz4281/2526/SC0.csv"},
+    "belgium_first": {"label": "Belgium - First Division A", "url": "https://www.football-data.co.uk/mmz4281/2526/B1.csv"},
+    "turkey_superlig": {"label": "Turkey - Super Lig", "url": "https://www.football-data.co.uk/mmz4281/2526/T1.csv"},
+
+    "auto": {"label": "AUTO - wyszukaj ligę", "url": ""}
+}
+
 TEXT_CACHE = {}
 JSON_CACHE = {}
 
@@ -204,8 +233,75 @@ def crest(team, big=False):
         return f"<img class='{cls}' src='https://logo.clearbit.com/{domain}' onerror=\"this.style.display='none';this.nextElementSibling.style.display='inline-flex';\"><span class='{cls} fake' style='display:none'>{esc(initials)}</span>"
     return f"<span class='{cls} fake'>{esc(initials)}</span>"
 
+
+CACHE_DIR = "qe_cache"
+CACHE_TTL_SECONDS = 60 * 60 * 12
+
+def ensure_cache_dir():
+    import os
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+def cache_file_for_url(url):
+    import hashlib, os
+    ensure_cache_dir()
+    name = hashlib.md5(url.encode("utf-8")).hexdigest() + ".cache"
+    return os.path.join(CACHE_DIR, name)
+
+def http_text_cached(url, force_refresh=False):
+    """
+    Szybsze pobieranie:
+    1. RAM cache
+    2. cache plikowy 12h
+    3. dopiero potem internet
+    """
+    import os, time
+    if not force_refresh and url in TEXT_CACHE:
+        return TEXT_CACHE[url], "RAM cache"
+
+    path = cache_file_for_url(url)
+    if not force_refresh and os.path.exists(path):
+        age = time.time() - os.path.getmtime(path)
+        if age < CACHE_TTL_SECONDS:
+            try:
+                text = Path(path).read_text(encoding="utf-8", errors="ignore")
+                TEXT_CACHE[url] = text
+                return text, "file cache"
+            except Exception:
+                pass
+
+    text, err = http_text(url)
+    if text and not err:
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except Exception:
+            pass
+        TEXT_CACHE[url] = text
+        return text, "internet"
+
+    # jeżeli internet padnie, użyj starego cache, nawet po TTL
+    if os.path.exists(path):
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="ignore")
+            TEXT_CACHE[url] = text
+            return text, "old file cache"
+        except Exception:
+            pass
+
+    return "", "error: " + str(err)
+
+def rows_from_football_data_url(url, force_refresh=False):
+    text, cache_source = http_text_cached(url, force_refresh=force_refresh)
+    if not text:
+        return [], cache_source
+    try:
+        rows = list(csv.DictReader(io.StringIO(text)))
+        return rows, cache_source
+    except Exception as e:
+        return [], "csv error: " + str(e)
+
+
 def default_values():
-    return {"home_team":"","away_team":"","city":"","league":"Premier League","xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"xg_source":"brak","form_home":0,"form_away":0,"tempo":0,"odds":1.75,"odds_1":0,"odds_x":0,"odds_2":0,"odds_source":"brak","shots_home":0,"shots_away":0,"sot_home":0,"sot_away":0,"corners_home":0,"corners_away":0,"cards_home":0,"cards_away":0,"home_home_matches":"","home_away_matches":"","away_home_matches":"","away_away_matches":"","message":"","sources":"","bookmaker":"Rynek"}
+    return {"home_team":"","away_team":"","city":"","league":"Premier League","league_key":"auto","country":"AUTO","cache_source":"brak","xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"xg_source":"brak","form_home":0,"form_away":0,"tempo":0,"odds":1.75,"odds_1":0,"odds_x":0,"odds_2":0,"odds_source":"brak","shots_home":0,"shots_away":0,"sot_home":0,"sot_away":0,"corners_home":0,"corners_away":0,"cards_home":0,"cards_away":0,"home_home_matches":"","home_away_matches":"","away_home_matches":"","away_away_matches":"","message":"","sources":"","bookmaker":"Rynek"}
 
 def row_has_team(row, team): return match_team(row.get("HomeTeam",""), team) or match_team(row.get("AwayTeam",""), team)
 def side(row, team):
@@ -284,12 +380,13 @@ def understat_xg(home,away):
             out["source"]=" | ".join(src); return out
     return out
 
-def fetch_stats(home_team,away_team,city=""):
+def fetch_stats(home_team,away_team,city="",league_key="auto",force_refresh=False):
     v=default_values(); home=normalize_team_name(home_team); away=normalize_team_name(away_team)
-    v["home_team"]=home; v["away_team"]=away; v["city"]=city
-    rows,src=load_rows(home,away)
+    v["home_team"]=home; v["away_team"]=away; v["city"]=city; v["league_key"]=league_key; v["cache_source"]=src if "src" in locals() else "brak"
+    rows,src=load_rows(home,away,league_key=league_key,force_refresh=force_refresh)
+    v["cache_source"]=src
     if not rows:
-        v["message"]="Brak danych Football-Data."; v["sources"]="Football-Data: brak"; return v
+        v["message"]="Brak danych Football-Data dla wybranej ligi."; v["sources"]="Football-Data: brak / " + src; return v
     h=team_stats(rows,home); a=team_stats(rows,away)
     if h:
         v["form_home"],v["shots_home"],v["sot_home"],v["corners_home"],v["cards_home"]=h["form"],h["shots"],h["sot"],h["corners"],h["cards"]
@@ -366,7 +463,7 @@ CSS = """
 """
 
 def hidden(v):
-    keys=["xg_home","xg_away","xga_home","xga_away","xg_source","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","odds_source","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
+    keys=["league_key","cache_source","xg_home","xg_away","xga_home","xga_away","xg_source","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","odds_source","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
     return "".join(f'<input type="hidden" name="{k}" value="{esc(v.get(k,""))}">' for k in keys)
 
 def hist_rows():
@@ -418,14 +515,33 @@ def page(v=None,result=None,show_history=False):
     home=v["home_team"] or "Manchester City"; away=v["away_team"] or "West Ham United"
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge v30</title>{CSS}</head><body><div class='shell'>
 <aside class='left'><div class='logo'>⚡ QUANTUM<span>EDGE</span></div><div class='nav'><a href='/'>⌂ DASHBOARD</a><a href='/'>◉ LIVE</a><a href='/history'>↺ HISTORY</a><a href='/'>⌕ VALUE FINDER</a><a href='/'>🏆 LEAGUES</a><a href='/'>⚙ SETTINGS</a></div>
-<div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>COUNTRY</label><select name='league'><option>All Countries</option><option>Premier League</option><option>Serie A</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ GET STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
+<div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>KRAJ / LIGA</label><select name='league_key'>
+<option value='auto'>AUTO - wyszukaj ligę</option>
+<option value='england_premier_league'>Anglia - Premier League</option>
+<option value='england_championship'>Anglia - Championship</option>
+<option value='england_league_one'>Anglia - League One</option>
+<option value='england_league_two'>Anglia - League Two</option>
+<option value='spain_laliga'>Hiszpania - La Liga</option>
+<option value='spain_laliga2'>Hiszpania - La Liga 2</option>
+<option value='italy_serie_a'>Włochy - Serie A</option>
+<option value='italy_serie_b'>Włochy - Serie B</option>
+<option value='germany_bundesliga'>Niemcy - Bundesliga</option>
+<option value='germany_bundesliga2'>Niemcy - 2. Bundesliga</option>
+<option value='france_ligue1'>Francja - Ligue 1</option>
+<option value='france_ligue2'>Francja - Ligue 2</option>
+<option value='netherlands_eredivisie'>Holandia - Eredivisie</option>
+<option value='portugal_primeira'>Portugalia - Primeira Liga</option>
+<option value='belgium_first'>Belgia - First Division A</option>
+<option value='turkey_superlig'>Turcja - Super Lig</option>
+<option value='scotland_premiership'>Szkocja - Premiership</option>
+</select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ FAST STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
 <div class='card'><h2>QUICK STATS</h2><div class='quick'><div>{crest(home)}<br>{esc(home)}</div><div>{crest(away)}<br>{esc(away)}</div></div><div class='mini'>WIN % <b>{v["form_home"]}</b> - <b>{v["form_away"]}</b></div><div class='mini'>AVG xG <b>{v["xg_home"]}</b> - <b>{v["xg_away"]}</b></div><div class='mini'>FORM <span class='g'>● ● ●</span> <span class='r'>● ●</span></div></div><p class='muted'>Quantum Edge v30</p></aside>
 <main class='center'><div class='top'><div class='status'>API STATUS <span></span>Odds API <span></span>Understat <span></span>Football-Data</div><div>LIVE CLOCK <span class='b'>{datetime.now().strftime("%H:%M:%S")}</span></div></div>
 <div class='card match'><div>{crest(home, True)}</div><div><small class='b'>PREMIER LEAGUE</small><h1>{esc(home)} vs {esc(away)}</h1><div class='muted'>📅 {datetime.now().strftime("%d.%m.%Y")} | 🏟 Stadium</div></div><div>{crest(away, True)}</div></div>
 <div class='card'><h2>FLOW ENGINE 2.0</h2><div class='flow'><div class='tile'><small>CONTROL FLOW</small><b class='g'>{f["control"]}</b></div><div class='tile'><small>CHAOS FLOW</small><b class='r'>{f["chaos"]}</b></div><div class='tile'><small>TRANSITION POWER</small><b class='p'>{f["transition"]}</b></div><div class='tile'><small>COLLAPSE RISK</small><b class='o'>{f["collapse"]}</b></div><div class='tile'><small>DRAW ACCEPTANCE</small><b class='b'>{f["draw"]}</b></div></div></div>
 <div class='card'><h2>EXACT SCORE ENGINE 2.0</h2><div class='score'><div><small>CONTROL SCENARIO</small><b class='g'>{c}</b></div><div><small>VALUE SCENARIO</small><b class='o'>{val}</b></div><div><small>CHAOS SCENARIO</small><b class='r'>{ch}</b></div></div></div>
 <div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>
-<div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2><div class='datagrid'><div><small>xG</small><b>{v["xg_home"]} - {v["xg_away"]}</b></div><div><small>xGA</small><b>{v["xga_home"]} - {v["xga_away"]}</b></div><div><small>FORMA</small><b>{v["form_home"]} - {v["form_away"]}</b></div><div><small>TEMPO</small><b>{v["tempo"]}/100</b></div><div><small>STRZAŁY</small><b>{v["shots_home"]} - {v["shots_away"]}</b></div><div><small>CELNE</small><b>{v["sot_home"]} - {v["sot_away"]}</b></div><div><small>ROŻNE</small><b>{v["corners_home"]} - {v["corners_away"]}</b></div><div><small>KARTKI</small><b>{v["cards_home"]} - {v["cards_away"]}</b></div></div></div><div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
+<div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2><div class='datagrid'><div><small>xG</small><b>{v["xg_home"]} - {v["xg_away"]}</b></div><div><small>xGA</small><b>{v["xga_home"]} - {v["xga_away"]}</b></div><div><small>FORMA</small><b>{v["form_home"]} - {v["form_away"]}</b></div><div><small>TEMPO</small><b>{v["tempo"]}/100</b></div><div><small>STRZAŁY</small><b>{v["shots_home"]} - {v["shots_away"]}</b></div><div><small>CELNE</small><b>{v["sot_home"]} - {v["sot_away"]}</b></div><div><small>ROŻNE</small><b>{v["corners_home"]} - {v["corners_away"]}</b></div><div><small>KARTKI</small><b>{v["cards_home"]} - {v["cards_away"]}</b></div></div></div><div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>⚡ Cache: {esc(v.get("cache_source", "brak"))}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
 <aside class='right'><div class='card'><h2>TEAM PROFILES</h2><h3 class='b'>{esc(home.upper())}</h3><div>Control <b style='float:right'>85</b><div class='bar'><div class='fill' style='width:85%'></div></div></div><div>Transition <b style='float:right'>78</b><div class='bar'><div class='fill purp' style='width:78%'></div></div></div><div>Chaos <b style='float:right'>25</b><div class='bar'><div class='fill red' style='width:25%'></div></div></div><h3 class='r'>{esc(away.upper())}</h3><div>Control <b style='float:right'>28</b><div class='bar'><div class='fill red' style='width:28%'></div></div></div><div>Chaos <b style='float:right'>71</b><div class='bar'><div class='fill org' style='width:71%'></div></div></div></div>
 <div class='card'><h2>xG / xGA (LAST 5)</h2><div class='mini'><b>{esc(home)}</b><br>xG {v["xg_home"]}<br>xGA {v["xga_home"]}</div><div class='mini'><b>{esc(away)}</b><br>xG {v["xg_away"]}<br>xGA {v["xga_away"]}</div><svg width='100%' height='100' viewBox='0 0 280 100'><polyline points='0,80 40,70 80,40 120,44 160,34 200,30 240,18 280,10' fill='none' stroke='#31bfff' stroke-width='2'/><polyline points='0,86 40,76 80,72 120,70 160,65 200,62 240,54 280,44' fill='none' stroke='#ff4a5f' stroke-width='2'/></svg></div>
 <div class='card'><h2>LAST MATCHES</h2><div class='mini'><b>H-H</b><br>{esc(v["home_home_matches"] or "brak danych")}</div><div class='mini'><b>H-A</b><br>{esc(v["home_away_matches"] or "brak danych")}</div><div class='mini'><b>A-H</b><br>{esc(v["away_home_matches"] or "brak danych")}</div><div class='mini'><b>A-A</b><br>{esc(v["away_away_matches"] or "brak danych")}</div></div></aside>{leagues_panel()}
@@ -436,13 +552,13 @@ def home(): return page(default_values())
 @app.get("/history", response_class=HTMLResponse)
 def history(): return page(default_values(),show_history=True)
 @app.post("/fetch", response_class=HTMLResponse)
-def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),mode:str=Form("stats"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
+def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league_key:str=Form("auto"),mode:str=Form("stats"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
     cur=form_values(**locals())
-    upd=fetch_odds(home_team,away_team,"Rynek") if mode=="odds" else fetch_stats(home_team,away_team,city)
+    upd=fetch_odds(home_team,away_team,"Rynek") if mode=="odds" else fetch_stats(home_team,away_team,city,league_key=league_key)
     v=merge(cur,upd,ODDS_KEYS if mode=="odds" else STAT_KEYS)
     return page(v)
 @app.post("/analyze", response_class=HTMLResponse)
-def analyze(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
+def analyze(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league_key:str=Form("auto"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
     v=form_values(**locals()); r=model(v)
     con=sqlite3.connect(DB_PATH); cur=con.cursor()
     cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime("%d.%m.%Y"),home_team,away_team,r["pick"],r["prob"],r["fair"],odds,r["edge"],r["control"],r["rating"]))
