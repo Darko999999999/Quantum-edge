@@ -9,6 +9,7 @@ import csv
 import io
 import difflib
 import re
+import html
 
 app = FastAPI(title="Quantum Edge Web")
 DB_PATH = "quantum_edge.db"
@@ -133,6 +134,17 @@ POLISH_ALIASES = {
     "dynamo kijow": "Dynamo Kyiv", "dynamo kyiv": "Dynamo Kyiv",
     "kopenhaga": "FC Copenhagen", "fc copenhagen": "FC Copenhagen",
     "malmo": "Malmo FF", "mälmo": "Malmo FF", "bodo glimt": "Bodo/Glimt",
+
+    "real madrid": "Real Madrid",
+    "athletic club": "Athletic Club",
+    "athletic bilbao": "Athletic Club",
+    "atletico bilbao": "Athletic Club",
+    "atletico madrid": "Atletico Madrid",
+    "inter milan": "Inter",
+    "ac milan": "AC Milan",
+    "tottenham hotspur": "Tottenham",
+    "brighton and hove albion": "Brighton",
+    "borussia monchengladbach": "Borussia M.Gladbach",
 }
 
 
@@ -224,6 +236,9 @@ def default_values():
         "btts": 0,
         "over25": 0,
         "confidence": 0,
+        "xg_source": "brak",
+        "xga_home": 0,
+        "xga_away": 0,
         "message": "",
         "sources": "",
         "last_home": "",
@@ -318,64 +333,101 @@ def team_side(row, team):
 
 
 
+
+def parse_understat_json_blob(text):
+    m = re.search(r"teamsData\s*=\s*JSON\.parse\('(.+?)'\)", text, flags=re.S)
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        raw = raw.encode("utf-8").decode("unicode_escape")
+        raw = html.unescape(raw)
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def understat_match_score(api_name, user_name):
+    a = norm(api_name)
+    b = norm(normalize_team_name(user_name))
+    if not a or not b:
+        return 0
+    if a == b:
+        return 1.0
+    if b in a or a in b:
+        return 0.92
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def understat_find_team(data, team_name):
+    best = None
+    best_score = 0
+    for _, team in data.items():
+        score = understat_match_score(team.get("title", ""), team_name)
+        if score > best_score:
+            best = team
+            best_score = score
+    if best_score >= 0.58:
+        return best
+    return None
+
+
+def understat_avg(team, last_n=5):
+    hist = team.get("history", [])[-last_n:]
+    if not hist:
+        return None
+    xg_sum = 0
+    xga_sum = 0
+    n = 0
+    for item in hist:
+        xg = safe_float(item.get("xG"))
+        xga = safe_float(item.get("xGA"))
+        if xg == 0 and xga == 0:
+            continue
+        xg_sum += xg
+        xga_sum += xga
+        n += 1
+    if n == 0:
+        return None
+    return {"xg": round(xg_sum / n, 2), "xga": round(xga_sum / n, 2), "n": n}
+
+
 def understat_team_xg(home_team, away_team):
-    """
-    Pobiera sezonowe xG/xGA drużyn z Understat dla top 5 lig.
-    Jeśli nie znajdzie danych, zwraca 0/0 — bez udawania.
-    """
-    result = {"xg_home": 0, "xg_away": 0, "source": ""}
+    result = {"xg_home": 0, "xg_away": 0, "xga_home": 0, "xga_away": 0, "source": ""}
+    home_query = normalize_team_name(home_team)
+    away_query = normalize_team_name(away_team)
 
     for league in UNDERSTAT_LEAGUES:
-        url = "https://understat.com/league/" + league
-        text, err = http_text(url)
+        text, err = http_text("https://understat.com/league/" + league)
         if err or not text:
             continue
-
-        m = re.search(r"teamsData\\s*=\\s*JSON\\.parse\\('(.+?)'\\)", text)
-        if not m:
+        data = parse_understat_json_blob(text)
+        if not data:
             continue
 
-        try:
-            raw = m.group(1)
-            raw = raw.encode("utf-8").decode("unicode_escape")
-            data = json.loads(raw)
-        except Exception:
-            continue
+        home_obj = understat_find_team(data, home_query)
+        away_obj = understat_find_team(data, away_query)
+        found = False
+        source_parts = ["Understat " + league]
 
-        found_home = None
-        found_away = None
+        if home_obj:
+            h = understat_avg(home_obj)
+            if h:
+                result["xg_home"] = h["xg"]
+                result["xga_home"] = h["xga"]
+                source_parts.append("home: " + home_obj.get("title", ""))
+                found = True
 
-        for _, team in data.items():
-            title = team.get("title", "")
-            history = team.get("history", [])
-            if not history:
-                continue
+        if away_obj:
+            a = understat_avg(away_obj)
+            if a:
+                result["xg_away"] = a["xg"]
+                result["xga_away"] = a["xga"]
+                source_parts.append("away: " + away_obj.get("title", ""))
+                found = True
 
-            xg_sum = 0
-            xga_sum = 0
-            n = 0
-            for item in history[-5:]:
-                xg_sum += safe_float(item.get("xG"))
-                xga_sum += safe_float(item.get("xGA"))
-                n += 1
-
-            if n == 0:
-                continue
-
-            avg_xg = round(xg_sum / n, 2)
-            avg_xga = round(xga_sum / n, 2)
-
-            if match_team(title, home_team):
-                found_home = {"team": title, "xg": avg_xg, "xga": avg_xga}
-            if match_team(title, away_team):
-                found_away = {"team": title, "xg": avg_xg, "xga": avg_xga}
-
-        if found_home or found_away:
-            if found_home:
-                result["xg_home"] = found_home["xg"]
-            if found_away:
-                result["xg_away"] = found_away["xg"]
-            result["source"] = "Understat " + league
+        if found:
+            result["source"] = " | ".join(source_parts)
             return result
 
     return result
@@ -527,6 +579,9 @@ def calculate_real_stats(home_team, away_team, city=""):
     uxg = understat_team_xg(home, away)
     v["xg_home"] = uxg.get("xg_home", 0)
     v["xg_away"] = uxg.get("xg_away", 0)
+    v["xga_home"] = uxg.get("xga_home", 0)
+    v["xga_away"] = uxg.get("xga_away", 0)
+    v["xg_source"] = uxg.get("source", "brak") or "brak"
 
     splits_home = team_home_away_matches(rows, home)
     splits_away = team_home_away_matches(rows, away)
@@ -554,10 +609,10 @@ def calculate_real_stats(home_team, away_team, city=""):
         v["confidence"] = 35
 
     if v["xg_home"] or v["xg_away"]:
-        v["message"] = "Realne statystyki pobrane z Football-Data + xG z Understat."
+        v["message"] = "Realne statystyki pobrane z Football-Data + realne xG z Understat."
     else:
-        v["message"] = "Realne statystyki pobrane z Football-Data. xG zostaje 0, bo Understat nie znalazł tej drużyny/ligi."
-    extra_xg = (" | " + uxg.get("source", "")) if uxg.get("source") else ""
+        v["message"] = "Realne statystyki pobrane z Football-Data. xG zostaje 0, bo Understat nie znalazł realnych danych dla tej ligi/nazw."
+    extra_xg = (" | " + uxg.get("source", "")) if uxg.get("source") else " | Understat: brak xG"
     v["sources"] = "Football-Data " + source + extra_xg + " | " + ", ".join(messages)
     return v
 
@@ -1031,6 +1086,8 @@ def quantum_dashboard(v, result=None):
 def mini_stats(v):
     html = '<div class="stats">'
     html += f'<div><span>xG</span><b>{v["xg_home"]} - {v["xg_away"]}</b></div>'
+    html += f'<div><span>xGA</span><b>{v.get("xga_home", 0)} - {v.get("xga_away", 0)}</b></div>'
+    html += f'<div><span>Źródło xG</span><b>{esc(v.get("xg_source", "brak"))}</b></div>'
     html += f'<div><span>Forma</span><b>{v["form_home"]} - {v["form_away"]}</b></div>'
     html += f'<div><span>Kursy 1X2</span><b>{v["odds_1"]} / {v["odds_x"]} / {v["odds_2"]}</b></div>'
     html += f'<div><span>Źródło kursu</span><b>{esc(v["odds_source"])}</b></div>'
@@ -1198,7 +1255,7 @@ def page(v=None, result=None, history_rows=None):
     html += f'<label>Gość<input name="away_team" required value="{esc(v["away_team"])}" placeholder="Atletico Bilbao"></label>'
     html += f'<label>Miasto meczu / pogoda<input name="city" value="{esc(v["city"])}" placeholder="Madryt"></label>'
     html += '<label>Źródło / bukmacher<select name="bookmaker"><option>Rynek</option><option>bet365</option><option>Betfair</option><option>Unibet</option><option>William Hill</option><option>STS</option><option>Betclic</option><option>Fortuna</option><option>Superbet</option></select></label>'
-    hidden_keys = ["xg_home","xg_away","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","defensive_control","draw_acceptance","collapse_home","collapse_away","absences","weather","market_risk","btts","over25","confidence","odds_source","last_home","last_away","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
+    hidden_keys = ["xg_home","xg_away","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","defensive_control","draw_acceptance","collapse_home","collapse_away","absences","weather","market_risk","btts","over25","confidence","odds_source","xg_source","xga_home","xga_away","last_home","last_away","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
     for hk in hidden_keys:
         html += f'<input type="hidden" name="{hk}" value="{esc(v.get(hk, ""))}">'
     html += '</div></form>'
@@ -1258,6 +1315,9 @@ def fetch(
     over25: float = Form(0),
     confidence: float = Form(0),
     odds_source: str = Form("brak"),
+    xg_source: str = Form("brak"),
+    xga_home: float = Form(0),
+    xga_away: float = Form(0),
     last_home: str = Form(""),
     last_away: str = Form(""),
     home_home_matches: str = Form(""),
