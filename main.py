@@ -40,7 +40,109 @@ LOGO_DOMAINS = {
 "manchester city":"mancity.com","west ham united":"whufc.com","manchester united":"manutd.com","arsenal":"arsenal.com","chelsea":"chelseafc.com","liverpool":"liverpoolfc.com","tottenham":"tottenhamhotspur.com","newcastle united":"newcastleunited.com",
 "bayern munich":"fcbayern.com","borussia dortmund":"bvb.de","rb leipzig":"rbleipzig.com","bayer leverkusen":"bayer04.de",
 "paris saint germain":"psg.fr","marseille":"om.fr","lyon":"ol.fr","monaco":"asmonaco.com","lille":"losc.fr","lens":"rclens.fr","nice":"ogcnice.com",
-"lech poznan":"lechpoznan.pl","legia warsaw":"legia.com","rakow czestochowa":"rakow.com","jagiellonia bialystok":"jagiellonia.pl","slask wroclaw":"slaskwroclaw.pl","widzew lodz":"widzew.com"
+"lech poznan":"lechpoznan.pl","legia warsaw":"legia.com","rakow czestochowa":"rakow.com","jagiellonia bialystok":"jagiellonia.pl","slask wroclaw":"slaskwroclaw.pl","widzew lodz":"widzew.com",
+"burnley":"burnleyfootballclub.com",
+"leeds united":"leedsunited.com",
+"leicester city":"lcfc.com",
+"southampton":"southamptonfc.com",
+"norwich city":"canaries.co.uk",
+"sunderland":"safc.com",
+"middlesbrough":"mfc.co.uk",
+"blackburn rovers":"rovers.co.uk",
+"sheffield united":"sufc.co.uk",
+"sheffield wednesday":"swfc.co.uk",
+"stoke city":"stokecityfc.com",
+"watford":"watfordfc.com",
+"qpr":"qpr.co.uk",
+"queens park rangers":"qpr.co.uk",
+"derby county":"dcfc.co.uk",
+"bolton wanderers":"bwfc.co.uk",
+"portsmouth":"portsmouthfc.co.uk",
+"charlton athletic":"charltonafc.com",
+"espanyol":"rcdespanyol.com",
+"granada":"granadacf.es",
+"levante":"levanteud.com",
+"eibar":"sdeibar.com",
+"zaragoza":"realzaragoza.com",
+"sporting gijon":"realsporting.com",
+"racing santander":"realracingclub.es",
+"leganes":"cdleganes.com",
+"malaga":"malagacf.com",
+"deportivo la coruna":"rcdeportivo.es",
+"parma":"parmacalcio1913.com",
+"palermo":"palermofc.com",
+"sampdoria":"sampdoria.it",
+"spezia":"acspezia.com",
+"cremonese":"uscremonese.it",
+"venezia":"veneziafc.it",
+"pisa":"pisasportingclub.com",
+"bari":"sscalciobari.it",
+"modena":"modenacalcio.com",
+"cesena":"cesenafc.com",
+"hamburger sv":"hsv.de",
+"schalke":"schalke04.de",
+"schalke 04":"schalke04.de",
+"hertha berlin":"herthabsc.com",
+"koln":"fc.de",
+"fc koln":"fc.de",
+"hannover 96":"hannover96.de",
+"kaiserslautern":"fck.de",
+"nurnberg":"fcn.de",
+"st pauli":"fcstpauli.com",
+"1860 munich":"tsv1860.de",
+"dynamo dresden":"dynamo-dresden.de",
+"saint etienne":"asse.fr",
+"bordeaux":"girondins.com",
+"metz":"fcmetz.com",
+"auxerre":"aja.fr",
+"angers":"angers-sco.fr",
+"troyes":"estac.fr",
+"caen":"smcaen.fr",
+"guingamp":"eaguingamp.com",
+"ajax":"ajax.nl",
+"psv":"psv.nl",
+"feyenoord":"feyenoord.nl",
+"az alkmaar":"az.nl",
+"twente":"fctwente.nl",
+"porto":"fcporto.pt",
+"benfica":"slbenfica.pt",
+"sporting cp":"sporting.pt",
+"braga":"scbraga.pt",
+"anderlecht":"rsca.be",
+"club brugge":"clubbrugge.be",
+"genk":"krcgenk.be",
+"standard liege":"standard.be",
+"wisla krakow":"wisla.krakow.pl",
+"wisła kraków":"wisla.krakow.pl",
+"arka gdynia":"arka.gdynia.pl",
+"miedz legnica":"miedzlegnica.eu",
+"miedź legnica":"miedzlegnica.eu",
+"motor lublin":"motorlublin.eu",
+"gks katowice":"gkskatowice.eu",
+"ruch chorzow":"ruchchorzow.com.pl",
+"ruch chorzów":"ruchchorzow.com.pl",
+"polonia warszawa":"kspolonia.pl",
+"lks lodz":"lkslodz.pl",
+"łks łódź":"lkslodz.pl",
+"celtic":"celticfc.com",
+"rangers":"rangers.co.uk",
+"malmo":"mff.se",
+"malmö":"mff.se",
+"rosenborg":"rbk.no",
+"bodo glimt":"glimt.no",
+"bodø glimt":"glimt.no",
+"fc copenhagen":"fck.dk",
+"brondby":"brondby.com",
+"brøndby":"brondby.com",
+"basel":"fcb.ch",
+"young boys":"bscyb.ch",
+"rapid wien":"skrapid.at",
+"salzburg":"redbullsalzburg.at",
+"dinamo zagreb":"gnkdinamo.hr",
+"crvena zvezda":"crvenazvezdafk.com",
+"partizan":"partizan.rs",
+"shakhtar donetsk":"shakhtar.com",
+"dynamo kyiv":"fcdynamo.com"
 }
 
 TEXT_CACHE = {}
@@ -75,7 +177,7 @@ def http_text(url):
     if url in TEXT_CACHE: return TEXT_CACHE[url], None
     try:
         req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"*/*"})
-        with urllib.request.urlopen(req, timeout=4) as r:
+        with urllib.request.urlopen(req, timeout=3) as r:
             text=r.read().decode("utf-8",errors="ignore")
             TEXT_CACHE[url]=text
             return text,None
@@ -85,7 +187,7 @@ def http_json(url):
     if url in JSON_CACHE: return JSON_CACHE[url], None
     try:
         req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
-        with urllib.request.urlopen(req, timeout=4) as r:
+        with urllib.request.urlopen(req, timeout=3) as r:
             data=json.loads(r.read().decode("utf-8",errors="ignore"))
             JSON_CACHE[url]=data
             return data,None
@@ -259,6 +361,7 @@ def model(v):
 CSS = """
 <style>
 *{box-sizing:border-box}body{margin:0;background:#02070d;color:#eaf6ff;font-family:Arial,Helvetica,sans-serif;font-size:12px}.shell{width:100%;min-height:100vh;display:grid;grid-template-columns:250px minmax(680px,1fr) 330px 360px;background:radial-gradient(circle at top,#071522,#02070d 55%,#000)}.left,.right,.leagues{padding:12px;background:#03101d;border-color:#103451}.left{border-right:1px solid #103451}.right,.leagues{border-left:1px solid #103451}.center{padding:12px}.logo{font-size:22px;font-weight:900;color:#fff;line-height:1;margin:6px 0 18px}.logo span{display:block;color:#08bfff}.nav a{display:block;color:#d8e7f8;text-decoration:none;border:1px solid #123a5b;border-radius:7px;padding:10px;margin-bottom:7px;background:#061321}.nav a:first-child{border-color:#08a7ff;color:#37c9ff}.card{background:linear-gradient(180deg,#07182a,#030d18);border:1px solid #143b5d;border-radius:8px;padding:12px;margin-bottom:10px;box-shadow:0 8px 24px #0008}h2{font-size:16px;margin:0 0 10px}.search label{display:block;color:#9fb3ca;font-size:11px;margin:7px 0 4px}.search input,.search select{width:100%;padding:9px;border-radius:6px;border:1px solid #244360;background:#020812;color:white}.btn{width:100%;border:0;border-radius:6px;padding:10px;margin-top:7px;font-weight:900;color:white}.blue{background:#075fd0}.green{background:#078d38}.purple{background:#5722b6}.top{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #123451;padding:6px 0 10px;margin-bottom:10px}.status span{display:inline-block;width:10px;height:10px;border-radius:50%;background:#20d832;margin:0 5px}.match{display:grid;grid-template-columns:74px 1fr 74px;align-items:center;gap:12px}.crest{width:50px;height:50px;object-fit:contain}.big{width:60px;height:60px}.fake{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#0c1e31;color:#8cff32;border:1px solid #24506f;font-weight:900}.match h1{margin:0;font-size:24px}.muted{color:#9fb3ca}.flow{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.tile{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:10px}.tile small{font-size:10px}.tile b{display:block;font-size:30px;margin-top:4px}.g{color:#59ff37}.r{color:#ff4a5f}.p{color:#b268ff}.o{color:#ffc021}.b{color:#31bfff}.score{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.score div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:14px}.score b{font-size:40px}.market{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.market div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:8px}.market b{display:block;margin-top:4px}.insight{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bar{height:8px;background:#0c1e31;border-radius:50px;overflow:hidden;margin:4px 0 9px}.fill{height:100%;background:#24d43b}.fill.red{background:#ff4a5f}.fill.purp{background:#b268ff}.fill.org{background:#ffc021}.mini{background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:9px;margin-bottom:8px}.quick{display:flex;justify-content:space-around;text-align:center}.hist{display:grid;grid-template-columns:1fr 2.1fr .8fr 1fr 1fr 1fr 1fr;gap:7px;font-size:11px}.hist div{padding:5px;border-bottom:1px solid #123451}.lggrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.lg{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:8px;min-height:70px}.lg span{display:block;font-size:24px}.teams{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;text-align:center}.teams .crest{width:42px;height:42px}@media(max-width:1300px){.shell{grid-template-columns:230px minmax(650px,1fr) 300px}.leagues{display:none}}@media(max-width:950px){.shell{display:block}.left,.right,.leagues{border:0}.flow,.score,.market,.insight,.hist,.lggrid,.teams{grid-template-columns:1fr}.center{padding:10px}}
+.tierbar{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}.tierbar span{text-align:center;border:1px solid #0b6fad;border-radius:6px;padding:7px;color:#31bfff;background:#04111f;font-weight:900}.datagrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.datagrid div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:9px}.datagrid small{display:block;color:#9fb3ca}.datagrid b{display:block;color:#59ff37;font-size:16px;margin-top:4px}@media(max-width:950px){.datagrid{grid-template-columns:1fr}}
 </style>
 """
 
@@ -270,14 +373,33 @@ def hist_rows():
     con=sqlite3.connect(DB_PATH); cur=con.cursor(); cur.execute("SELECT created_at,home_team,away_team,pick,probability,value_edge,exact_score,rating FROM analyses ORDER BY id DESC LIMIT 6"); rows=cur.fetchall(); con.close(); return rows
 
 def leagues_panel():
-    leagues=[("🏴","Premier League","England"),("🇪🇸","La Liga","Spain"),("🇩🇪","Bundesliga","Germany"),("🇮🇹","Serie A","Italy"),("🇫🇷","Ligue 1","France"),("🇳🇱","Eredivisie","Netherlands"),("🇵🇹","Primeira Liga","Portugal"),("🇧🇪","Jupiler","Belgium"),("🇹🇷","Süper Lig","Turkey"),("🏴","Premiership","Scotland"),("🇸🇪","Allsvenskan","Sweden"),("🇳🇴","Eliteserien","Norway")]
-    teams=["Manchester City","Real Madrid","Bayern Munich","Paris Saint Germain","Manchester United","Barcelona","Liverpool","Juventus","AC Milan","Arsenal"]
-    html="<aside class='leagues'><div class='card'><h2>LEAGUES</h2><div class='lggrid'>"
+    leagues = [
+        ("🏴", "Premier League", "England 1"), ("🏴", "Championship", "England 2"), ("🏴", "League One", "England 3"),
+        ("🇪🇸", "La Liga", "Spain 1"), ("🇪🇸", "La Liga 2", "Spain 2"), ("🇪🇸", "Primera RFEF", "Spain 3"),
+        ("🇮🇹", "Serie A", "Italy 1"), ("🇮🇹", "Serie B", "Italy 2"), ("🇮🇹", "Serie C", "Italy 3"),
+        ("🇩🇪", "Bundesliga", "Germany 1"), ("🇩🇪", "2. Bundesliga", "Germany 2"), ("🇩🇪", "3. Liga", "Germany 3"),
+        ("🇫🇷", "Ligue 1", "France 1"), ("🇫🇷", "Ligue 2", "France 2"), ("🇫🇷", "National", "France 3"),
+        ("🇵🇱", "Ekstraklasa", "Poland 1"), ("🇵🇱", "1 Liga", "Poland 2"), ("🇵🇱", "2 Liga", "Poland 3"),
+        ("🇳🇱", "Eredivisie", "Netherlands 1"), ("🇳🇱", "Eerste Divisie", "Netherlands 2"),
+        ("🇵🇹", "Primeira Liga", "Portugal 1"), ("🇵🇹", "Liga Portugal 2", "Portugal 2"),
+        ("🇧🇪", "Jupiler Pro League", "Belgium 1"), ("🇧🇪", "Challenger Pro League", "Belgium 2"),
+        ("🇹🇷", "Süper Lig", "Turkey 1"), ("🇹🇷", "1. Lig", "Turkey 2"),
+        ("🏴", "Premiership", "Scotland 1"), ("🏴", "Championship", "Scotland 2"),
+        ("🇦🇹", "Bundesliga", "Austria 1"), ("🇦🇹", "2. Liga", "Austria 2"),
+        ("🇨🇭", "Super League", "Switzerland 1"), ("🇨🇭", "Challenge League", "Switzerland 2"),
+        ("🇩🇰", "Superliga", "Denmark 1"), ("🇩🇰", "1st Division", "Denmark 2"),
+        ("🇸🇪", "Allsvenskan", "Sweden 1"), ("🇸🇪", "Superettan", "Sweden 2"),
+        ("🇳🇴", "Eliteserien", "Norway 1"), ("🇳🇴", "OBOS-ligaen", "Norway 2"),
+        ("🇨🇿", "Czech First League", "Czechia 1"), ("🇷🇴", "Liga I", "Romania 1"), ("🇭🇷", "HNL", "Croatia 1"), ("🇬🇷", "Super League", "Greece 1")
+    ]
+    teams = ["Manchester City","Real Madrid","Bayern Munich","Paris Saint Germain","Manchester United","Barcelona","Liverpool","Juventus","AC Milan","Arsenal","Inter","Napoli","Ajax","Porto","Benfica"]
+    html = "<aside class='leagues'><div class='card'><h2>LEAGUES / 1-2-3 TIER EUROPE</h2><div class='tierbar'><span>1ST TIER</span><span>2ND TIER</span><span>3RD TIER</span></div><div class='lggrid'>"
     for ico,n,c in leagues:
-        html+=f"<div class='lg'><span>{ico}</span><b>{n}</b><br><small class='muted'>{c}</small></div>"
-    html+="</div><p class='b'>+ 18 more leagues</p></div><div class='card'><h2>POPULAR TEAMS</h2><div class='teams'>"
-    for t in teams: html+=f"<div>{crest(t)}<br><small>{t.split()[0]}</small></div>"
-    html+="</div></div></aside>"
+        html += f"<div class='lg'><span>{ico}</span><b>{n}</b><br><small class='muted'>{c}</small></div>"
+    html += "</div><p class='b'>Europe league base added — 1/2/3 tiers where available.</p></div><div class='card'><h2>POPULAR TEAMS</h2><div class='teams'>"
+    for t in teams:
+        html += f"<div>{crest(t)}<br><small>{t.split()[0]}</small></div>"
+    html += "</div></div></aside>"
     return html
 
 def page(v=None,result=None,show_history=False):
@@ -303,7 +425,7 @@ def page(v=None,result=None,show_history=False):
 <div class='card'><h2>FLOW ENGINE 2.0</h2><div class='flow'><div class='tile'><small>CONTROL FLOW</small><b class='g'>{f["control"]}</b></div><div class='tile'><small>CHAOS FLOW</small><b class='r'>{f["chaos"]}</b></div><div class='tile'><small>TRANSITION POWER</small><b class='p'>{f["transition"]}</b></div><div class='tile'><small>COLLAPSE RISK</small><b class='o'>{f["collapse"]}</b></div><div class='tile'><small>DRAW ACCEPTANCE</small><b class='b'>{f["draw"]}</b></div></div></div>
 <div class='card'><h2>EXACT SCORE ENGINE 2.0</h2><div class='score'><div><small>CONTROL SCENARIO</small><b class='g'>{c}</b></div><div><small>VALUE SCENARIO</small><b class='o'>{val}</b></div><div><small>CHAOS SCENARIO</small><b class='r'>{ch}</b></div></div></div>
 <div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>
-<div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
+<div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2><div class='datagrid'><div><small>xG</small><b>{v["xg_home"]} - {v["xg_away"]}</b></div><div><small>xGA</small><b>{v["xga_home"]} - {v["xga_away"]}</b></div><div><small>FORMA</small><b>{v["form_home"]} - {v["form_away"]}</b></div><div><small>TEMPO</small><b>{v["tempo"]}/100</b></div><div><small>STRZAŁY</small><b>{v["shots_home"]} - {v["shots_away"]}</b></div><div><small>CELNE</small><b>{v["sot_home"]} - {v["sot_away"]}</b></div><div><small>ROŻNE</small><b>{v["corners_home"]} - {v["corners_away"]}</b></div><div><small>KARTKI</small><b>{v["cards_home"]} - {v["cards_away"]}</b></div></div></div><div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
 <aside class='right'><div class='card'><h2>TEAM PROFILES</h2><h3 class='b'>{esc(home.upper())}</h3><div>Control <b style='float:right'>85</b><div class='bar'><div class='fill' style='width:85%'></div></div></div><div>Transition <b style='float:right'>78</b><div class='bar'><div class='fill purp' style='width:78%'></div></div></div><div>Chaos <b style='float:right'>25</b><div class='bar'><div class='fill red' style='width:25%'></div></div></div><h3 class='r'>{esc(away.upper())}</h3><div>Control <b style='float:right'>28</b><div class='bar'><div class='fill red' style='width:28%'></div></div></div><div>Chaos <b style='float:right'>71</b><div class='bar'><div class='fill org' style='width:71%'></div></div></div></div>
 <div class='card'><h2>xG / xGA (LAST 5)</h2><div class='mini'><b>{esc(home)}</b><br>xG {v["xg_home"]}<br>xGA {v["xga_home"]}</div><div class='mini'><b>{esc(away)}</b><br>xG {v["xg_away"]}<br>xGA {v["xga_away"]}</div><svg width='100%' height='100' viewBox='0 0 280 100'><polyline points='0,80 40,70 80,40 120,44 160,34 200,30 240,18 280,10' fill='none' stroke='#31bfff' stroke-width='2'/><polyline points='0,86 40,76 80,72 120,70 160,65 200,62 240,54 280,44' fill='none' stroke='#ff4a5f' stroke-width='2'/></svg></div>
 <div class='card'><h2>LAST MATCHES</h2><div class='mini'><b>H-H</b><br>{esc(v["home_home_matches"] or "brak danych")}</div><div class='mini'><b>H-A</b><br>{esc(v["home_away_matches"] or "brak danych")}</div><div class='mini'><b>A-H</b><br>{esc(v["away_home_matches"] or "brak danych")}</div><div class='mini'><b>A-A</b><br>{esc(v["away_away_matches"] or "brak danych")}</div></div></aside>{leagues_panel()}
