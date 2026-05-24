@@ -423,7 +423,9 @@ def hidden(v):
 def dashboard(v, result=None, hist=False):
     if result is None:
         result = calculate_model(v) if (v.get("home_team") or v.get("away_team")) else None
-    flow, exact, conf = flow_engine(v), exact_score_engine(v, flow), data_confidence_engine(v)
+    flow = flow_engine(v)
+    exact = exact_score_engine(v, flow)
+    conf = data_confidence_engine(v)
     hist_html = ""
     if hist:
         rows = history_rows()
