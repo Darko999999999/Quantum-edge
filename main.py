@@ -34,6 +34,54 @@ ALIASES = {
 "lech":"Lech Poznan","legia":"Legia Warsaw","rakow":"Rakow Czestochowa","raków":"Rakow Czestochowa","jagiellonia":"Jagiellonia Bialystok","slask":"Slask Wroclaw","śląsk":"Slask Wroclaw","widzew":"Widzew Lodz"
 }
 
+
+LOGO_DOMAINS = {
+    "acmilan": "acmilan.com",
+    "cagliari": "cagliaricalcio.com",
+    "inter": "inter.it",
+    "juventus": "juventus.com",
+    "torino": "torinofc.it",
+    "atalanta": "atalanta.it",
+    "fiorentina": "acffiorentina.com",
+    "roma": "asroma.com",
+    "lazio": "sslazio.it",
+    "napoli": "sscnapoli.it",
+    "real madrid": "realmadrid.com",
+    "barcelona": "fcbarcelona.com",
+    "atletico madrid": "atleticodemadrid.com",
+    "athletic club": "athletic-club.eus",
+    "sevilla": "sevillafc.es",
+    "real betis": "realbetisbalompie.es",
+    "real sociedad": "realsociedad.eus",
+    "valencia": "valenciacf.com",
+    "villarreal": "villarrealcf.es",
+    "manchester city": "mancity.com",
+    "west ham united": "whufc.com",
+    "manchester united": "manutd.com",
+    "arsenal": "arsenal.com",
+    "chelsea": "chelseafc.com",
+    "liverpool": "liverpoolfc.com",
+    "tottenham": "tottenhamhotspur.com",
+    "newcastle united": "newcastleunited.com",
+    "bayern munich": "fcbayern.com",
+    "borussia dortmund": "bvb.de",
+    "rb leipzig": "rbleipzig.com",
+    "bayer leverkusen": "bayer04.de",
+    "paris saint germain": "psg.fr",
+    "marseille": "om.fr",
+    "lyon": "ol.fr",
+    "monaco": "asmonaco.com",
+    "lille": "losc.fr",
+    "lens": "rclens.fr",
+    "nice": "ogcnice.com",
+    "lech poznan": "lechpoznan.pl",
+    "legia warsaw": "legia.com",
+    "rakow czestochowa": "rakow.com",
+    "jagiellonia bialystok": "jagiellonia.pl",
+    "slask wroclaw": "slaskwroclaw.pl",
+    "widzew lodz": "widzew.com",
+}
+
 TEXT_CACHE = {}
 JSON_CACHE = {}
 BADGE_CACHE = {}
@@ -86,18 +134,36 @@ def http_json(url):
         return None,str(e)
 
 def crest(team):
-    team=normalize_team_name(team or "")
-    key=norm(team)
-    if key in BADGE_CACHE: badge=BADGE_CACHE[key]
+    team = normalize_team_name(team or "")
+    key = norm(team)
+
+    domain = LOGO_DOMAINS.get(key)
+    if domain:
+        initials = "".join([p[:1] for p in team.split()[:2]]).upper() or "QE"
+        return (
+            f"<img class='crest' src='https://logo.clearbit.com/{domain}' "
+            f"onerror=\"this.style.display='none';this.nextElementSibling.style.display='inline-flex';\">"
+            f"<span class='crest fake' style='display:none'>{esc(initials)}</span>"
+        )
+
+    if key in BADGE_CACHE:
+        badge = BADGE_CACHE[key]
     else:
-        data,err=http_json("https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t="+urllib.parse.quote(team))
-        badge=""
-        if not err and isinstance(data,dict) and data.get("teams"):
-            badge=data["teams"][0].get("strBadge") or data["teams"][0].get("strLogo") or ""
-        BADGE_CACHE[key]=badge
-    if badge: return f'<img class="crest" src="{esc(badge)}">'
-    ini="".join([p[:1] for p in team.split()[:2]]).upper() or "QE"
-    return f'<span class="crest fake">{esc(ini)}</span>'
+        data, err = http_json("https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=" + urllib.parse.quote(team))
+        badge = ""
+        if not err and isinstance(data, dict) and data.get("teams"):
+            for candidate in data["teams"]:
+                title = candidate.get("strTeam", "") or candidate.get("strAlternate", "")
+                if match_team(title, team):
+                    badge = candidate.get("strBadge") or candidate.get("strLogo") or ""
+                    break
+        BADGE_CACHE[key] = badge
+
+    if badge:
+        return f"<img class='crest' src='{esc(badge)}'>"
+    initials = "".join([p[:1] for p in team.split()[:2]]).upper() or "QE"
+    return f"<span class='crest fake'>{esc(initials)}</span>"
+
 
 def bigcrest(team):
     return crest(team).replace('class="crest"', 'class="crest big"')
@@ -294,6 +360,7 @@ CSS = """
 .statsgrid b{font-size:18px;color:#59ff37}
 @media(max-width:1000px){.selected-teams,.statsgrid{grid-template-columns:1fr}}
 
+.fake{width:58px;height:58px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#0c1e31;color:#8cff32;border:1px solid #24506f;font-weight:900}
 </style>
 """
 
