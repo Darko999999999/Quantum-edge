@@ -1083,6 +1083,104 @@ def quantum_dashboard(v, result=None):
     html += '</div></section>'
     return html
 
+
+def data_confidence_engine(v):
+    score = 0
+    reasons = []
+    if float(v.get("xg_home", 0) or 0) > 0 or float(v.get("xg_away", 0) or 0) > 0:
+        score += 30
+    else:
+        reasons.append("brak realnego xG")
+    if float(v.get("shots_home", 0) or 0) > 0 and float(v.get("shots_away", 0) or 0) > 0:
+        score += 20
+    else:
+        reasons.append("brak pełnych strzałów")
+    if float(v.get("odds_1", 0) or 0) > 1 and float(v.get("odds_x", 0) or 0) > 1 and float(v.get("odds_2", 0) or 0) > 1:
+        score += 20
+    else:
+        reasons.append("brak pełnych kursów")
+    if float(v.get("form_home", 0) or 0) > 0 and float(v.get("form_away", 0) or 0) > 0:
+        score += 15
+    else:
+        reasons.append("brak formy")
+    if float(v.get("tempo", 0) or 0) > 0:
+        score += 15
+    else:
+        reasons.append("brak tempa")
+    label = "HIGH" if score >= 75 else "MEDIUM" if score >= 50 else "LOW"
+    return {"score": score, "label": label, "reasons": ", ".join(reasons) if reasons else "OK"}
+
+
+def v20_guard_result(v, result):
+    if not result:
+        return result
+    conf = data_confidence_engine(v)
+    warnings = []
+    odds = float(v.get("odds", 0) or 0)
+    prob = float(result.get("probability", 0) or 0)
+    edge = float(result.get("value_edge", 0) or 0)
+    if conf["label"] == "LOW" and edge > 8:
+        warnings.append("FAKE VALUE RISK")
+        result["value_edge"] = 4.0
+    if odds >= 4.5 and prob >= 60:
+        warnings.append("MARKET CONFLICT")
+        result["probability"] = 55.0
+        result["value_edge"] = value_edge(55.0, odds)
+        result["rating"] = "⚠️ MARKET CONFLICT"
+    if float(v.get("xg_home", 0) or 0) == 0 and float(v.get("xg_away", 0) or 0) == 0:
+        warnings.append("NO REAL XG")
+    result["data_confidence"] = conf["label"]
+    result["data_confidence_score"] = conf["score"]
+    result["warnings"] = warnings
+    return result
+
+
+def ai_match_summary(v, result=None):
+    conf = data_confidence_engine(v)
+    home = v.get("home_team", "Gospodarz")
+    away = v.get("away_team", "Gość")
+    chaos = 0
+    control = 0
+    if "flow_engine" in globals():
+        f = flow_engine(v)
+        chaos = f.get("chaos", 0)
+        control = f.get("control", 0)
+    if chaos >= 62:
+        flow_txt = "profil chaos/transition"
+    elif control >= 68:
+        flow_txt = "profil kontrolowany"
+    else:
+        flow_txt = "profil mieszany"
+    warn = ""
+    if result and result.get("warnings"):
+        warn = " Ostrzeżenia: " + ", ".join(result.get("warnings", [])) + "."
+    return f"{home} vs {away}: {flow_txt}. Jakość danych: {conf['label']} ({conf['score']}/100). {conf['reasons']}.{warn}"
+
+
+def v20_top_cards(v, result=None):
+    if result:
+        result = v20_guard_result(v, result)
+    conf = data_confidence_engine(v)
+    pick = result.get("pick", "—") if result else "—"
+    prob = result.get("probability", 0) if result else 0
+    edge = result.get("value_edge", 0) if result else 0
+    rating = result.get("rating", "—") if result else "—"
+    html = '<section class="v20-hero">'
+    html += '<div class="v20-match"><div><small>Gospodarz</small><b>' + esc(v.get("home_team","")) + '</b></div><span>VS</span><div><small>Gość</small><b>' + esc(v.get("away_team","")) + '</b></div></div>'
+    html += '<div class="v20-kpis">'
+    html += '<div><small>Typ</small><strong>' + esc(pick) + '</strong></div>'
+    html += '<div><small>Probability</small><strong>' + str(prob) + '%</strong></div>'
+    html += '<div><small>Value</small><strong>' + str(edge) + ' pp</strong></div>'
+    html += '<div><small>Rating</small><strong>' + esc(rating) + '</strong></div>'
+    html += '<div><small>Data Quality</small><strong>' + conf["label"] + ' ' + str(conf["score"]) + '/100</strong></div>'
+    html += '</div></section>'
+    return html
+
+
+def v20_ai_summary_box(v, result=None):
+    return '<section class="card ai-card"><h2>🤖 AI Match Summary</h2><p>' + esc(ai_match_summary(v, result)) + '</p></section>'
+
+
 def mini_stats(v):
     html = '<div class="stats">'
     html += f'<div><span>xG</span><b>{v["xg_home"]} - {v["xg_away"]}</b></div>'
@@ -1110,6 +1208,8 @@ def mini_stats(v):
 
 
 def result_box(result, v):
+    if result:
+        result = v20_guard_result(v, result)
     if not result:
         return ""
     html = '<section class="card">'
@@ -1191,6 +1291,13 @@ def page(v=None, result=None, history_rows=None):
     a{color:#90ff36;text-decoration:none}
     .nav a{margin-left:10px;border:1px solid #30445b;padding:8px 12px;border-radius:12px}
     .card{background:rgba(12,22,36,.92);border:1px solid #22344c;border-radius:18px;padding:18px;margin-bottom:16px;box-shadow:0 14px 38px rgba(0,0,0,.32)}
+    .v20-hero{background:linear-gradient(135deg,rgba(15,36,53,.96),rgba(6,10,18,.96));border:1px solid #2c4e70;border-radius:22px;padding:18px;margin-bottom:16px;box-shadow:0 18px 50px rgba(0,0,0,.42)}
+    .v20-match{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;text-align:center;margin-bottom:14px}
+    .v20-match span{font-size:28px;font-weight:900;color:#49a7ff;text-shadow:0 0 18px #49a7ff}
+    .v20-match small{display:block;color:#91a0b5}.v20-match b{font-size:26px}
+    .v20-kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+    .v20-kpis div{background:#08111e;border:1px solid #22344c;border-radius:14px;padding:12px;text-align:center}
+    .v20-kpis strong{font-size:18px}.ai-card{border-color:rgba(73,167,255,.45)}.ai-card p{font-size:16px;line-height:1.6;color:#dbe7f7}
     .hero h1{margin:8px 0;font-size:26px}
     .label{color:#90ff36;font-size:13px;font-weight:bold}
     .topline{display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -1236,17 +1343,20 @@ def page(v=None, result=None, history_rows=None):
     .score-card strong,.profile-card strong{display:block;color:#90ff36;font-size:22px;margin-top:8px}
     .score-card.chaos strong{color:#ff4f6d}
     .match-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
-    @media(max-width:560px){.app{padding:14px}.two,.grid-3,.stats,.history-row,.match-grid,.score-grid,.profile-grid,.hist-head,.hist-row{grid-template-columns:1fr}}
+    @media(max-width:560px){.app{padding:14px}.v20-match,.v20-kpis{grid-template-columns:1fr}.two,.grid-3,.stats,.history-row,.match-grid,.score-grid,.profile-grid,.hist-head,.hist-row{grid-template-columns:1fr}}
     </style>
     """
 
     html = '<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Quantum Edge</title><meta name="viewport" content="width=device-width, initial-scale=1.0">' + css + '</head><body><div class="app">'
     html += '<header><div class="logo">⚛ QUANTUM <span>EDGE</span></div><div class="nav"><a href="/">Analiza</a><a href="/history">Historia</a></div></header>'
     html += '<section class="card hero"><div class="label">REAL DATA ENGINE</div><h1>Quantum Edge Web MVP</h1><p>⚡ pobiera realne statystyki z Football-Data. Jeśli brak danych, nie wpisuje fake/proxy. 💰 pobiera kursy z The Odds API.</p></section>'
+    if v.get("home_team") or v.get("away_team"):
+        html += v20_top_cards(v, result)
     html += result_box(result, v)
     html += fetched_box(v)
     if v.get("home_team") or v.get("away_team"):
         html += quantum_dashboard(v, result)
+        html += v20_ai_summary_box(v, result)
     html += history_box(history_rows)
 
     html += '<form action="/fetch" method="post" class="card"><div class="topline"><h2>Dane meczu</h2><div class="iconbar"><button class="roundbtn" name="mode" value="stats" type="submit">⚡</button><button class="roundbtn money" name="mode" value="odds" type="submit">💰</button></div></div>'
