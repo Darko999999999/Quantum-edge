@@ -283,12 +283,54 @@ def model(v):
 CSS = """
 <style>
 *{box-sizing:border-box}body{margin:0;background:#02070d;color:#eaf6ff;font-family:Arial,Helvetica,sans-serif;font-size:14px}.shell{display:grid;grid-template-columns:250px 1fr 330px;min-height:100vh;background:radial-gradient(circle at top,#061829,#02070d 55%,#000)}.left{border-right:1px solid #103451;padding:16px;background:#03101d}.center{padding:16px}.right{border-left:1px solid #103451;padding:16px;background:#03101d}.logo{font-size:24px;font-weight:900;line-height:1;color:#fff;margin-bottom:18px}.logo span{display:block;color:#08bfff}.nav a{display:block;text-decoration:none;color:#d8e7f8;padding:11px;border:1px solid #153653;border-radius:8px;margin-bottom:8px;background:#061321}.nav a:first-child{border-color:#08a7ff;color:#37c9ff}.card{background:linear-gradient(180deg,#07182a,#030d18);border:1px solid #143b5d;border-radius:10px;padding:14px;margin-bottom:12px;box-shadow:0 10px 30px #0008}h2{font-size:18px;margin:0 0 12px}.search label{display:block;color:#9fb3ca;font-size:12px;margin:8px 0 5px}.search input,.search select{width:100%;padding:10px;border-radius:7px;border:1px solid #244360;background:#020812;color:white}.btn{width:100%;border:0;border-radius:7px;padding:11px;margin-top:8px;font-weight:900;color:white}.blue{background:#075fd0}.green{background:#078d38}.purple{background:#5722b6}.top{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #123451;padding-bottom:10px;margin-bottom:12px}.status span{display:inline-block;width:10px;height:10px;border-radius:50%;background:#20d832;margin:0 6px}.match{display:grid;grid-template-columns:80px 1fr 80px;align-items:center;gap:12px}.crest{width:58px;height:58px;object-fit:contain}.fake{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#0c1e31;color:#8cff32;border:1px solid #24506f;font-weight:900}.match h1{margin:0;font-size:25px}.muted{color:#9fb3ca}.flow{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.tile{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:8px;padding:11px}.tile small{font-size:10px}.tile b{display:block;font-size:32px;margin-top:5px}.g{color:#59ff37}.r{color:#ff4a5f}.p{color:#b268ff}.o{color:#ffc021}.b{color:#31bfff}.score{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.score div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:8px;padding:16px}.score b{font-size:42px}.market{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.market div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:8px;padding:9px}.market b{display:block;margin-top:5px}.insight{display:grid;grid-template-columns:1fr 1fr;gap:10px}.bar{height:8px;background:#0c1e31;border-radius:50px;overflow:hidden;margin:4px 0 9px}.fill{height:100%;background:#24d43b}.fill.red{background:#ff4a5f}.fill.purp{background:#b268ff}.fill.org{background:#ffc021}.mini{background:#04111f;border:1px solid #1f405e;border-radius:8px;padding:10px;margin-bottom:8px}.quick{display:flex;justify-content:space-around;text-align:center}.hist{display:grid;grid-template-columns:1fr 2fr 1fr 1fr 1fr 1fr 1fr;gap:8px;font-size:12px}.hist div{padding:6px;border-bottom:1px solid #123451}@media(max-width:1000px){.shell{display:block}.flow,.score,.market,.insight,.hist{grid-template-columns:1fr}.left,.right{border:0}}
+
+.selected-teams{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;margin:10px 0 12px}
+.selected-team{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:9px;padding:10px}
+.selected-team .crest{width:58px;height:58px}
+.selected-team b{display:block;margin-top:6px;color:#eaf6ff}
+.statsgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.statsgrid div{background:#04111f;border:1px solid #1f405e;border-radius:8px;padding:10px;text-align:center}
+.statsgrid small{display:block;color:#9fb3ca;margin-bottom:5px}
+.statsgrid b{font-size:18px;color:#59ff37}
+@media(max-width:1000px){.selected-teams,.statsgrid{grid-template-columns:1fr}}
+
 </style>
 """
 
 def hidden(v):
     keys=["xg_home","xg_away","xga_home","xga_away","xg_source","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","odds_source","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
     return "".join(f'<input type="hidden" name="{k}" value="{esc(v.get(k,""))}">' for k in keys)
+
+def selected_teams_box(v):
+    home = v.get("home_team") or "Home"
+    away = v.get("away_team") or "Away"
+    return f"""
+    <div class='selected-teams'>
+      <div class='selected-team'>{crest(home)}<b>{esc(home)}</b></div>
+      <div class='vs'>VS</div>
+      <div class='selected-team'>{crest(away)}<b>{esc(away)}</b></div>
+    </div>
+    """
+
+def stats_card(v):
+    return f"""
+    <div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2>
+      <div class='statsgrid'>
+        <div><small>xG</small><b>{v['xg_home']} - {v['xg_away']}</b></div>
+        <div><small>xGA</small><b>{v['xga_home']} - {v['xga_away']}</b></div>
+        <div><small>Forma</small><b>{v['form_home']} - {v['form_away']}</b></div>
+        <div><small>Tempo</small><b>{v['tempo']}/100</b></div>
+        <div><small>Strzały</small><b>{v['shots_home']} - {v['shots_away']}</b></div>
+        <div><small>Celne</small><b>{v['sot_home']} - {v['sot_away']}</b></div>
+        <div><small>Rożne</small><b>{v['corners_home']} - {v['corners_away']}</b></div>
+        <div><small>Kartki</small><b>{v['cards_home']} - {v['cards_away']}</b></div>
+        <div><small>Kursy 1/X/2</small><b>{v['odds_1']} / {v['odds_x']} / {v['odds_2']}</b></div>
+        <div><small>Źródło xG</small><b>{esc(v['xg_source'])}</b></div>
+        <div><small>Źródło kursów</small><b>{esc(v['odds_source'])}</b></div>
+        <div><small>Źródła</small><b>{esc(v['sources'])}</b></div>
+      </div>
+    </div>
+    """
 
 def hist_rows():
     con=sqlite3.connect(DB_PATH); cur=con.cursor(); cur.execute("SELECT created_at,home_team,away_team,pick,probability,value_edge,exact_score,rating FROM analyses ORDER BY id DESC LIMIT 6"); rows=cur.fetchall(); con.close(); return rows
@@ -303,13 +345,13 @@ def page(v=None,result=None,show_history=False):
     history_html+="</div></div>"
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge v25</title>{CSS}</head><body><div class='shell'>
 <aside class='left'><div class='logo'>⚡ QUANTUM<span>EDGE</span></div><div class='nav'><a href='/'>⌂ DASHBOARD</a><a href='/'>◉ LIVE</a><a href='/history'>↺ HISTORY</a><a href='/'>⌕ VALUE FINDER</a><a href='/'>⚙ SETTINGS</a></div>
-<div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>LEAGUE</label><select name='league'><option>Premier League</option><option>La Liga</option><option>Serie A</option><option>Bundesliga</option><option>Ligue 1</option><option>Ekstraklasa</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ GET STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
+<div class='card search'><h2>MATCH SEARCH</h2>{selected_teams_box(v)}<form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>LEAGUE</label><select name='league'><option>Premier League</option><option>La Liga</option><option>Serie A</option><option>Bundesliga</option><option>Ligue 1</option><option>Ekstraklasa</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ GET STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
 <div class='card'><h2>QUICK STATS</h2><div class='quick'><div>{crest(v["home_team"] or "Home")}<br>{esc(v["home_team"] or "Home")}</div><div>{crest(v["away_team"] or "Away")}<br>{esc(v["away_team"] or "Away")}</div></div><div class='mini'>WIN % <b>{v["form_home"]}</b> - <b>{v["form_away"]}</b></div><div class='mini'>AVG xG <b>{v["xg_home"]}</b> - <b>{v["xg_away"]}</b></div><div class='mini'>FORM <span class='g'>● ● ●</span> <span class='r'>● ●</span></div></div></aside>
 <main class='center'><div class='top'><div class='status'>API STATUS <span></span>Odds API <span></span>Understat <span></span>Football-Data</div><div>LIVE CLOCK <span class='b'>{datetime.now().strftime("%H:%M:%S")}</span></div></div>
 <div class='card match'><div>{bigcrest(v["home_team"] or "Manchester City")}</div><div><small class='b'>PREMIER LEAGUE</small><h1>{esc(v["home_team"] or "Manchester City")} vs {esc(v["away_team"] or "West Ham United")}</h1><div class='muted'>📅 {datetime.now().strftime("%d.%m.%Y")} | 🏟 Stadium</div></div><div>{bigcrest(v["away_team"] or "West Ham United")}</div></div>
 <div class='card'><h2>FLOW ENGINE 2.0</h2><div class='flow'><div class='tile'><small>CONTROL FLOW</small><b class='g'>{f["control"]}</b></div><div class='tile'><small>CHAOS FLOW</small><b class='r'>{f["chaos"]}</b></div><div class='tile'><small>TRANSITION POWER</small><b class='p'>{f["transition"]}</b></div><div class='tile'><small>COLLAPSE RISK</small><b class='o'>{f["collapse"]}</b></div><div class='tile'><small>DRAW ACCEPTANCE</small><b class='b'>{f["draw"]}</b></div></div></div>
 <div class='card'><h2>EXACT SCORE ENGINE 2.0</h2><div class='score'><div><small>CONTROL SCENARIO</small><b class='g'>{c}</b></div><div><small>VALUE SCENARIO</small><b class='o'>{val}</b></div><div><small>CHAOS SCENARIO</small><b class='r'>{ch}</b></div></div></div>
-<div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>
+<div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>{stats_card(v)}
 <div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
 <aside class='right'><div class='card'><h2>TEAM PROFILES</h2><h3 class='b'>{esc(v["home_team"] or "MAN CITY")}</h3><div>Control <b style='float:right'>85</b><div class='bar'><div class='fill' style='width:85%'></div></div></div><div>Transition <b style='float:right'>78</b><div class='bar'><div class='fill purp' style='width:78%'></div></div></div><div>Chaos <b style='float:right'>25</b><div class='bar'><div class='fill red' style='width:25%'></div></div></div><h3 class='r'>{esc(v["away_team"] or "WEST HAM")}</h3><div>Control <b style='float:right'>28</b><div class='bar'><div class='fill red' style='width:28%'></div></div></div><div>Chaos <b style='float:right'>71</b><div class='bar'><div class='fill org' style='width:71%'></div></div></div></div>
 <div class='card'><h2>xG / xGA (LAST 5)</h2><div class='mini'><b>{esc(v["home_team"] or "Home")}</b><br>xG {v["xg_home"]}<br>xGA {v["xga_home"]}</div><div class='mini'><b>{esc(v["away_team"] or "Away")}</b><br>xG {v["xg_away"]}<br>xGA {v["xga_away"]}</div></div>
