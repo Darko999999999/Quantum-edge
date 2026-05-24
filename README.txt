@@ -1,0 +1,1 @@
+Rozpakuj ZIP i podmień main.py oraz requirements.txt w folderze GitHub/Quantum-edge. Commit + Push.
