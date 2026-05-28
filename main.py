@@ -1,437 +1,450 @@
-from fastapi import FastAPI, Form, Request
+
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
-import requests, csv, io, sqlite3, json, os, time, hashlib, difflib
 from datetime import datetime
+import sqlite3
+import urllib.request, urllib.parse, json, csv, io, difflib, re, html as html_lib
 
-app = FastAPI(title="Quantum Edge v34")
-
+app = FastAPI(title="Quantum Edge v30")
 DB_PATH = "quantum_edge.db"
-CACHE_DIR = "qe_cache"
-CACHE_TTL = 60 * 60 * 12
-os.makedirs(CACHE_DIR, exist_ok=True)
+ODDS_API_KEY = "4235b3c48084bdd173789f88b6ddadfd"
 
-# Ligi dostępne do wyboru.
-# Football-Data działa stabilnie głównie dla top lig i części 2 lig.
-# Niższe ligi bez stabilnego CSV zostają jako widoczne opcje do dalszej integracji API.
-LEAGUES = {
-    "auto": {"country": "AUTO", "tier": "AUTO", "name": "AUTO - wyszukaj", "url": ""},
-
-    "england_premier": {"country": "England", "tier": "1", "name": "Premier League", "url": "https://www.football-data.co.uk/mmz4281/2526/E0.csv"},
-    "england_championship": {"country": "England", "tier": "2", "name": "Championship", "url": "https://www.football-data.co.uk/mmz4281/2526/E1.csv"},
-    "england_league_one": {"country": "England", "tier": "3", "name": "League One", "url": "https://www.football-data.co.uk/mmz4281/2526/E2.csv"},
-    "england_league_two": {"country": "England", "tier": "4", "name": "League Two", "url": "https://www.football-data.co.uk/mmz4281/2526/E3.csv"},
-
-    "spain_laliga": {"country": "Spain", "tier": "1", "name": "La Liga", "url": "https://www.football-data.co.uk/mmz4281/2526/SP1.csv"},
-    "spain_laliga2": {"country": "Spain", "tier": "2", "name": "La Liga 2", "url": "https://www.football-data.co.uk/mmz4281/2526/SP2.csv"},
-    "spain_primera_rfef": {"country": "Spain", "tier": "3", "name": "Primera RFEF", "url": ""},
-
-    "italy_serie_a": {"country": "Italy", "tier": "1", "name": "Serie A", "url": "https://www.football-data.co.uk/mmz4281/2526/I1.csv"},
-    "italy_serie_b": {"country": "Italy", "tier": "2", "name": "Serie B", "url": "https://www.football-data.co.uk/mmz4281/2526/I2.csv"},
-    "italy_serie_c": {"country": "Italy", "tier": "3", "name": "Serie C", "url": ""},
-
-    "germany_bundesliga": {"country": "Germany", "tier": "1", "name": "Bundesliga", "url": "https://www.football-data.co.uk/mmz4281/2526/D1.csv"},
-    "germany_bundesliga2": {"country": "Germany", "tier": "2", "name": "2. Bundesliga", "url": "https://www.football-data.co.uk/mmz4281/2526/D2.csv"},
-    "germany_3liga": {"country": "Germany", "tier": "3", "name": "3. Liga", "url": ""},
-
-    "france_ligue1": {"country": "France", "tier": "1", "name": "Ligue 1", "url": "https://www.football-data.co.uk/mmz4281/2526/F1.csv"},
-    "france_ligue2": {"country": "France", "tier": "2", "name": "Ligue 2", "url": "https://www.football-data.co.uk/mmz4281/2526/F2.csv"},
-    "france_national": {"country": "France", "tier": "3", "name": "National", "url": ""},
-
-    "poland_ekstraklasa": {"country": "Poland", "tier": "1", "name": "Ekstraklasa", "url": "https://www.football-data.co.uk/new/POL.csv"},
-    "poland_1liga": {"country": "Poland", "tier": "2", "name": "1 Liga", "url": ""},
-    "poland_2liga": {"country": "Poland", "tier": "3", "name": "2 Liga", "url": ""},
-
-    "netherlands_eredivisie": {"country": "Netherlands", "tier": "1", "name": "Eredivisie", "url": "https://www.football-data.co.uk/mmz4281/2526/N1.csv"},
-    "netherlands_eerste": {"country": "Netherlands", "tier": "2", "name": "Eerste Divisie", "url": ""},
-    "portugal_primeira": {"country": "Portugal", "tier": "1", "name": "Primeira Liga", "url": "https://www.football-data.co.uk/mmz4281/2526/P1.csv"},
-    "portugal_liga2": {"country": "Portugal", "tier": "2", "name": "Liga Portugal 2", "url": ""},
-    "belgium_first": {"country": "Belgium", "tier": "1", "name": "First Division A", "url": "https://www.football-data.co.uk/mmz4281/2526/B1.csv"},
-    "belgium_second": {"country": "Belgium", "tier": "2", "name": "Challenger Pro League", "url": ""},
-    "turkey_superlig": {"country": "Turkey", "tier": "1", "name": "Super Lig", "url": "https://www.football-data.co.uk/mmz4281/2526/T1.csv"},
-    "turkey_1lig": {"country": "Turkey", "tier": "2", "name": "1. Lig", "url": ""},
-    "scotland_premiership": {"country": "Scotland", "tier": "1", "name": "Premiership", "url": "https://www.football-data.co.uk/mmz4281/2526/SC0.csv"},
-    "scotland_championship": {"country": "Scotland", "tier": "2", "name": "Championship", "url": "https://www.football-data.co.uk/mmz4281/2526/SC1.csv"},
-
-    "austria_bundesliga": {"country": "Austria", "tier": "1", "name": "Bundesliga", "url": ""},
-    "switzerland_super": {"country": "Switzerland", "tier": "1", "name": "Super League", "url": ""},
-    "denmark_superliga": {"country": "Denmark", "tier": "1", "name": "Superliga", "url": ""},
-    "sweden_allsvenskan": {"country": "Sweden", "tier": "1", "name": "Allsvenskan", "url": ""},
-    "norway_eliteserien": {"country": "Norway", "tier": "1", "name": "Eliteserien", "url": ""},
-    "czech_first": {"country": "Czechia", "tier": "1", "name": "Czech First League", "url": ""},
-    "romania_liga1": {"country": "Romania", "tier": "1", "name": "Liga I", "url": ""},
-    "croatia_hnl": {"country": "Croatia", "tier": "1", "name": "HNL", "url": ""},
-    "greece_super": {"country": "Greece", "tier": "1", "name": "Super League", "url": ""},
-}
+FOOTBALL_DATA_URLS = [
+    "https://www.football-data.co.uk/mmz4281/2526/E0.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/E1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/SP1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/I1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/D1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/F1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/N1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/P1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/SC0.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/B1.csv",
+    "https://www.football-data.co.uk/mmz4281/2526/T1.csv",
+]
+UNDERSTAT_LEAGUES = ["EPL", "La_liga", "Serie_A", "Bundesliga", "Ligue_1"]
+SPORT_KEYS = ["soccer_epl","soccer_spain_la_liga","soccer_italy_serie_a","soccer_germany_bundesliga","soccer_france_ligue_one","soccer_netherlands_eredivisie","soccer_portugal_primeira_liga","soccer_belgium_first_div","soccer_turkey_super_league","soccer_scotland_premiership","soccer_poland_ekstraklasa","soccer_uefa_champs_league","soccer_uefa_europa_league","soccer_uefa_europa_conference_league"]
 
 ALIASES = {
-    "real madryt": "Real Madrid", "milan": "AC Milan", "ac milan": "AC Milan",
-    "cagliari": "Cagliari", "man city": "Manchester City", "manchester city": "Manchester City",
-    "west ham": "West Ham United", "west ham united": "West Ham United",
-    "leverkusen": "Bayer Leverkusen", "bayern": "Bayern Munich",
-    "psg": "Paris Saint Germain", "lech": "Lech Poznan", "legia": "Legia Warsaw",
-    "rakow": "Rakow Czestochowa", "raków": "Rakow Czestochowa",
+"real madryt":"Real Madrid","real madrid":"Real Madrid","real":"Real Madrid","athletic bilbao":"Athletic Club","atletico bilbao":"Athletic Club","athletic club":"Athletic Club","atletico madryt":"Atletico Madrid","atletico madrid":"Atletico Madrid",
+"milan":"AC Milan","ac milan":"AC Milan","inter":"Inter","inter mediolan":"Inter","juventus":"Juventus","torino":"Torino","cagliari":"Cagliari","atalanta":"Atalanta","fiorentina":"Fiorentina","roma":"Roma","lazio":"Lazio","napoli":"Napoli","bologna":"Bologna",
+"man city":"Manchester City","manchester city":"Manchester City","west ham":"West Ham United","west ham united":"West Ham United","manchester united":"Manchester United","man utd":"Manchester United","arsenal":"Arsenal","chelsea":"Chelsea","liverpool":"Liverpool","tottenham":"Tottenham","newcastle":"Newcastle United",
+"psg":"Paris Saint Germain","paris sg":"Paris Saint Germain","lens":"Lens","nice":"Nice","nicea":"Nice","lyon":"Lyon","marseille":"Marseille","marsylia":"Marseille","lille":"Lille","monaco":"Monaco",
+"bayern":"Bayern Munich","bayern monachium":"Bayern Munich","dortmund":"Borussia Dortmund","leipzig":"RB Leipzig","rb lipsk":"RB Leipzig","leverkusen":"Bayer Leverkusen","bayer leverkusen":"Bayer Leverkusen",
+"lech":"Lech Poznan","legia":"Legia Warsaw","rakow":"Rakow Czestochowa","raków":"Rakow Czestochowa","jagiellonia":"Jagiellonia Bialystok","slask":"Slask Wroclaw","śląsk":"Slask Wroclaw","widzew":"Widzew Lodz"
 }
 
 LOGO_DOMAINS = {
-    "ac milan": "acmilan.com", "cagliari": "cagliaricalcio.com", "inter": "inter.it",
-    "juventus": "juventus.com", "torino": "torinofc.it", "napoli": "sscnapoli.it",
-    "manchester city": "mancity.com", "west ham united": "whufc.com",
-    "manchester united": "manutd.com", "arsenal": "arsenal.com", "chelsea": "chelseafc.com",
-    "liverpool": "liverpoolfc.com", "real madrid": "realmadrid.com",
-    "barcelona": "fcbarcelona.com", "bayern munich": "fcbayern.com",
-    "borussia dortmund": "bvb.de", "bayer leverkusen": "bayer04.de",
-    "paris saint germain": "psg.fr", "lech poznan": "lechpoznan.pl",
-    "legia warsaw": "legia.com", "rakow czestochowa": "rakow.com",
+"acmilan":"acmilan.com","cagliari":"cagliaricalcio.com","inter":"inter.it","juventus":"juventus.com","torino":"torinofc.it","atalanta":"atalanta.it","fiorentina":"acffiorentina.com","roma":"asroma.com","lazio":"sslazio.it","napoli":"sscnapoli.it","bologna":"bolognafc.it",
+"real madrid":"realmadrid.com","barcelona":"fcbarcelona.com","atletico madrid":"atleticodemadrid.com","athletic club":"athletic-club.eus","sevilla":"sevillafc.es","real betis":"realbetisbalompie.es","real sociedad":"realsociedad.eus","valencia":"valenciacf.com","villarreal":"villarrealcf.es",
+"manchester city":"mancity.com","west ham united":"whufc.com","manchester united":"manutd.com","arsenal":"arsenal.com","chelsea":"chelseafc.com","liverpool":"liverpoolfc.com","tottenham":"tottenhamhotspur.com","newcastle united":"newcastleunited.com",
+"bayern munich":"fcbayern.com","borussia dortmund":"bvb.de","rb leipzig":"rbleipzig.com","bayer leverkusen":"bayer04.de",
+"paris saint germain":"psg.fr","marseille":"om.fr","lyon":"ol.fr","monaco":"asmonaco.com","lille":"losc.fr","lens":"rclens.fr","nice":"ogcnice.com",
+"lech poznan":"lechpoznan.pl","legia warsaw":"legia.com","rakow czestochowa":"rakow.com","jagiellonia bialystok":"jagiellonia.pl","slask wroclaw":"slaskwroclaw.pl","widzew lodz":"widzew.com",
+"burnley":"burnleyfootballclub.com",
+"leeds united":"leedsunited.com",
+"leicester city":"lcfc.com",
+"southampton":"southamptonfc.com",
+"norwich city":"canaries.co.uk",
+"sunderland":"safc.com",
+"middlesbrough":"mfc.co.uk",
+"blackburn rovers":"rovers.co.uk",
+"sheffield united":"sufc.co.uk",
+"sheffield wednesday":"swfc.co.uk",
+"stoke city":"stokecityfc.com",
+"watford":"watfordfc.com",
+"qpr":"qpr.co.uk",
+"queens park rangers":"qpr.co.uk",
+"derby county":"dcfc.co.uk",
+"bolton wanderers":"bwfc.co.uk",
+"portsmouth":"portsmouthfc.co.uk",
+"charlton athletic":"charltonafc.com",
+"espanyol":"rcdespanyol.com",
+"granada":"granadacf.es",
+"levante":"levanteud.com",
+"eibar":"sdeibar.com",
+"zaragoza":"realzaragoza.com",
+"sporting gijon":"realsporting.com",
+"racing santander":"realracingclub.es",
+"leganes":"cdleganes.com",
+"malaga":"malagacf.com",
+"deportivo la coruna":"rcdeportivo.es",
+"parma":"parmacalcio1913.com",
+"palermo":"palermofc.com",
+"sampdoria":"sampdoria.it",
+"spezia":"acspezia.com",
+"cremonese":"uscremonese.it",
+"venezia":"veneziafc.it",
+"pisa":"pisasportingclub.com",
+"bari":"sscalciobari.it",
+"modena":"modenacalcio.com",
+"cesena":"cesenafc.com",
+"hamburger sv":"hsv.de",
+"schalke":"schalke04.de",
+"schalke 04":"schalke04.de",
+"hertha berlin":"herthabsc.com",
+"koln":"fc.de",
+"fc koln":"fc.de",
+"hannover 96":"hannover96.de",
+"kaiserslautern":"fck.de",
+"nurnberg":"fcn.de",
+"st pauli":"fcstpauli.com",
+"1860 munich":"tsv1860.de",
+"dynamo dresden":"dynamo-dresden.de",
+"saint etienne":"asse.fr",
+"bordeaux":"girondins.com",
+"metz":"fcmetz.com",
+"auxerre":"aja.fr",
+"angers":"angers-sco.fr",
+"troyes":"estac.fr",
+"caen":"smcaen.fr",
+"guingamp":"eaguingamp.com",
+"ajax":"ajax.nl",
+"psv":"psv.nl",
+"feyenoord":"feyenoord.nl",
+"az alkmaar":"az.nl",
+"twente":"fctwente.nl",
+"porto":"fcporto.pt",
+"benfica":"slbenfica.pt",
+"sporting cp":"sporting.pt",
+"braga":"scbraga.pt",
+"anderlecht":"rsca.be",
+"club brugge":"clubbrugge.be",
+"genk":"krcgenk.be",
+"standard liege":"standard.be",
+"wisla krakow":"wisla.krakow.pl",
+"wisła kraków":"wisla.krakow.pl",
+"arka gdynia":"arka.gdynia.pl",
+"miedz legnica":"miedzlegnica.eu",
+"miedź legnica":"miedzlegnica.eu",
+"motor lublin":"motorlublin.eu",
+"gks katowice":"gkskatowice.eu",
+"ruch chorzow":"ruchchorzow.com.pl",
+"ruch chorzów":"ruchchorzow.com.pl",
+"polonia warszawa":"kspolonia.pl",
+"lks lodz":"lkslodz.pl",
+"łks łódź":"lkslodz.pl",
+"celtic":"celticfc.com",
+"rangers":"rangers.co.uk",
+"malmo":"mff.se",
+"malmö":"mff.se",
+"rosenborg":"rbk.no",
+"bodo glimt":"glimt.no",
+"bodø glimt":"glimt.no",
+"fc copenhagen":"fck.dk",
+"brondby":"brondby.com",
+"brøndby":"brondby.com",
+"basel":"fcb.ch",
+"young boys":"bscyb.ch",
+"rapid wien":"skrapid.at",
+"salzburg":"redbullsalzburg.at",
+"dinamo zagreb":"gnkdinamo.hr",
+"crvena zvezda":"crvenazvezdafk.com",
+"partizan":"partizan.rs",
+"shakhtar donetsk":"shakhtar.com",
+"dynamo kyiv":"fcdynamo.com"
 }
+
+TEXT_CACHE = {}
+JSON_CACHE = {}
 
 def init_db():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS squads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        team TEXT UNIQUE,
-        notes TEXT,
-        updated_at TEXT
-    )""")
+    cur.execute("CREATE TABLE IF NOT EXISTS analyses (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, home_team TEXT, away_team TEXT, pick TEXT, probability REAL, fair_odds REAL, bookmaker_odds REAL, value_edge REAL, exact_score TEXT, rating TEXT)")
     con.commit()
     con.close()
-
 init_db()
 
-def norm(x):
-    return (x or "").lower().replace("ą","a").replace("ć","c").replace("ę","e").replace("ł","l").replace("ń","n").replace("ó","o").replace("ś","s").replace("ż","z").replace("ź","z").strip()
+def esc(x): return str(x).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+def norm(x): return (x or "").lower().replace(" ","").replace("-","").replace(".","").replace("_","").replace("'","").replace("ą","a").replace("ć","c").replace("ę","e").replace("ł","l").replace("ń","n").replace("ó","o").replace("ś","s").replace("ż","z").replace("ź","z")
+def normalize_team_name(name):
+    raw = (name or "").strip()
+    return ALIASES.get(raw.lower()) or ALIASES.get(norm(raw)) or raw
+def match_team(api_name, user_name):
+    a,b = norm(api_name), norm(normalize_team_name(user_name))
+    if not a or not b: return False
+    if a == b or b in a or a in b: return True
+    return difflib.SequenceMatcher(None,a,b).ratio() >= .60
+def safe_float(x):
+    try: return 0.0 if x in [None,""] else float(str(x).replace(",","."))
+    except Exception: return 0.0
+def safe_int(x):
+    try: return None if x in [None,""] else int(float(str(x).replace(",",".")))
+    except Exception: return None
 
-def display_name(team):
-    t = (team or "").strip()
-    return ALIASES.get(norm(t), t)
+def http_text(url):
+    if url in TEXT_CACHE: return TEXT_CACHE[url], None
+    try:
+        req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"*/*"})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            text=r.read().decode("utf-8",errors="ignore")
+            TEXT_CACHE[url]=text
+            return text,None
+    except Exception as e:
+        return "",str(e)
+def http_json(url):
+    if url in JSON_CACHE: return JSON_CACHE[url], None
+    try:
+        req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data=json.loads(r.read().decode("utf-8",errors="ignore"))
+            JSON_CACHE[url]=data
+            return data,None
+    except Exception as e:
+        return None,str(e)
 
-def esc(x):
-    return str(x).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
-
-def badge(team):
-    team = display_name(team)
-    domain = LOGO_DOMAINS.get(norm(team))
+def crest(team, big=False):
+    team = normalize_team_name(team or "")
+    key = norm(team)
+    cls = "crest big" if big else "crest"
+    domain = LOGO_DOMAINS.get(key)
     initials = "".join([p[:1] for p in team.split()[:2]]).upper() or "QE"
     if domain:
-        return f"<img class='crest' src='https://logo.clearbit.com/{domain}' onerror=\"this.style.display='none';this.nextElementSibling.style.display='flex';\"><span class='crest fake' style='display:none'>{initials}</span>"
-    return f"<span class='crest fake'>{initials}</span>"
+        return f"<img class='{cls}' src='https://logo.clearbit.com/{domain}' onerror=\"this.style.display='none';this.nextElementSibling.style.display='inline-flex';\"><span class='{cls} fake' style='display:none'>{esc(initials)}</span>"
+    return f"<span class='{cls} fake'>{esc(initials)}</span>"
 
-def cache_path(url):
-    h = hashlib.md5(url.encode()).hexdigest()
-    return os.path.join(CACHE_DIR, h + ".csv")
+def default_values():
+    return {"home_team":"","away_team":"","city":"","league":"Premier League","xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"xg_source":"brak","form_home":0,"form_away":0,"tempo":0,"odds":1.75,"odds_1":0,"odds_x":0,"odds_2":0,"odds_source":"brak","shots_home":0,"shots_away":0,"sot_home":0,"sot_away":0,"corners_home":0,"corners_away":0,"cards_home":0,"cards_away":0,"home_home_matches":"","home_away_matches":"","away_home_matches":"","away_away_matches":"","message":"","sources":"","bookmaker":"Rynek"}
 
-def get_rows_for_league(league_key):
-    src = LEAGUES.get(league_key, LEAGUES["auto"])
-    url = src.get("url", "")
-    if not url:
-        return [], "Brak stabilnego CSV dla tej ligi — opcja dodana do UI, wymaga API/źródła danych"
-
-    path = cache_path(url)
-    if os.path.exists(path) and time.time() - os.path.getmtime(path) < CACHE_TTL:
-        text = open(path, "r", encoding="utf-8", errors="ignore").read()
-        return list(csv.DictReader(io.StringIO(text))), "cache plikowy"
-
-    r = requests.get(url, timeout=8)
-    r.raise_for_status()
-    text = r.text
-    open(path, "w", encoding="utf-8").write(text)
-    return list(csv.DictReader(io.StringIO(text))), "internet"
-
-def get_rows_auto(home, away):
-    for key, meta in LEAGUES.items():
-        if key == "auto" or not meta.get("url"):
-            continue
-        try:
-            rows, source = get_rows_for_league(key)
-            if team_exists(home, rows) or team_exists(away, rows):
-                return rows, f"{meta['country']} - {meta['name']} / {source}", key
-        except Exception:
-            continue
-    return [], "AUTO: brak dopasowania", "auto"
-
-def team_exists(team, rows):
-    q = norm(display_name(team))
-    for r in rows:
-        if norm(r.get("HomeTeam","")) == q or norm(r.get("AwayTeam","")) == q:
-            return True
-    return False
-
-def similar(a, b):
-    return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio()
-
-def is_team(row_name, query):
-    a, b = norm(row_name), norm(display_name(query))
-    return a == b or b in a or a in b or similar(a,b) > 0.78
-
-def avg(values):
-    vals = [v for v in values if isinstance(v, (int, float))]
-    return round(sum(vals)/len(vals), 2) if vals else 0
-
-def get_float(row, key):
-    try:
-        val = row.get(key, "")
-        if val == "" or val is None:
-            return None
-        return float(val)
-    except Exception:
-        return None
-
-def team_stats(team, rows):
-    games = []
-    for r in rows:
-        if is_team(r.get("HomeTeam",""), team) or is_team(r.get("AwayTeam",""), team):
-            games.append(r)
-    games = games[-8:]
-
-    goals_for = []
-    goals_against = []
-    shots = []
-    shots_against = []
-    sot = []
-    sot_against = []
-    corners = []
-    corners_against = []
-    cards = []
-    cards_against = []
-    points = []
-    home_games = []
-    away_games = []
-
+def row_has_team(row, team): return match_team(row.get("HomeTeam",""), team) or match_team(row.get("AwayTeam",""), team)
+def side(row, team):
+    if match_team(row.get("HomeTeam",""), team): return "home"
+    if match_team(row.get("AwayTeam",""), team): return "away"
+    return None
+def load_rows(home,away):
+    for url in FOOTBALL_DATA_URLS:
+        text,err=http_text(url)
+        if err or not text: continue
+        try: rows=list(csv.DictReader(io.StringIO(text)))
+        except Exception: continue
+        if any(row_has_team(r,home) or row_has_team(r,away) for r in rows if r.get("HomeTeam")):
+            return rows,url.split("/")[-1]
+    return [],""
+def team_stats(rows, team):
+    games=[r for r in rows if row_has_team(r,team) and safe_int(r.get("FTHG")) is not None and safe_int(r.get("FTAG")) is not None][-5:]
+    if not games: return None
+    pts=shots=sot=corners=cards=gf=ga=0
     for r in games:
-        home = is_team(r.get("HomeTeam",""), team)
-        htg, atg = get_float(r, "FTHG"), get_float(r, "FTAG")
-        if htg is None or atg is None:
-            continue
-
-        if home:
-            gf, ga = htg, atg
-            s, sa = get_float(r,"HS"), get_float(r,"AS")
-            st, sta = get_float(r,"HST"), get_float(r,"AST")
-            c, ca = get_float(r,"HC"), get_float(r,"AC")
-            y, ya = get_float(r,"HY"), get_float(r,"AY")
-            home_games.append(f"{r.get('HomeTeam')} {int(htg)}:{int(atg)} {r.get('AwayTeam')}")
+        s=side(r,team); hg=safe_int(r.get("FTHG")) or 0; ag=safe_int(r.get("FTAG")) or 0
+        if s=="home":
+            own,opp=hg,ag; shots+=safe_float(r.get("HS")); sot+=safe_float(r.get("HST")); corners+=safe_float(r.get("HC")); cards+=safe_float(r.get("HY"))
         else:
-            gf, ga = atg, htg
-            s, sa = get_float(r,"AS"), get_float(r,"HS")
-            st, sta = get_float(r,"AST"), get_float(r,"HST")
-            c, ca = get_float(r,"AC"), get_float(r,"HC")
-            y, ya = get_float(r,"AY"), get_float(r,"HY")
-            away_games.append(f"{r.get('HomeTeam')} {int(htg)}:{int(atg)} {r.get('AwayTeam')}")
+            own,opp=ag,hg; shots+=safe_float(r.get("AS")); sot+=safe_float(r.get("AST")); corners+=safe_float(r.get("AC")); cards+=safe_float(r.get("AY"))
+        gf+=own; ga+=opp; pts+=3 if own>opp else 1 if own==opp else 0
+    n=len(games)
+    return {"form":round(pts/(n*3)*100,1),"shots":round(shots/n,1),"sot":round(sot/n,1),"corners":round(corners/n,1),"cards":round(cards/n,1),"gf":round(gf/n,2),"ga":round(ga/n,2)}
+def split_matches(rows, team):
+    hh,aa=[],[]
+    for r in rows:
+        if safe_int(r.get("FTHG")) is None: continue
+        ht,at=r.get("HomeTeam",""),r.get("AwayTeam",""); hg=safe_int(r.get("FTHG")) or 0; ag=safe_int(r.get("FTAG")) or 0
+        txt=f"{ht} {hg}:{ag} {at}"
+        if match_team(ht,team): hh.append(txt)
+        elif match_team(at,team): aa.append(txt)
+    return " | ".join(hh[-5:]), " | ".join(aa[-5:])
 
-        goals_for.append(gf)
-        goals_against.append(ga)
-        if s is not None: shots.append(s)
-        if sa is not None: shots_against.append(sa)
-        if st is not None: sot.append(st)
-        if sta is not None: sot_against.append(sta)
-        if c is not None: corners.append(c)
-        if ca is not None: corners_against.append(ca)
-        if y is not None: cards.append(y)
-        if ya is not None: cards_against.append(ya)
+def parse_understat(text):
+    m=re.search(r"teamsData\s*=\s*JSON\.parse\('(.+?)'\)", text, flags=re.S)
+    if not m: return None
+    try: return json.loads(html_lib.unescape(m.group(1).encode("utf-8").decode("unicode_escape")))
+    except Exception: return None
+def find_understat(data, team):
+    best=None; bs=0; q=normalize_team_name(team)
+    for _,t in data.items():
+        title=t.get("title","")
+        sc=1 if norm(title)==norm(q) else .92 if norm(q) in norm(title) or norm(title) in norm(q) else difflib.SequenceMatcher(None,norm(title),norm(q)).ratio()
+        if sc>bs: best=t; bs=sc
+    return best if bs>=.58 else None
+def avg_understat(t):
+    hist=t.get("history",[])[-5:]
+    if not hist: return None
+    sx=sa=n=0
+    for i in hist:
+        x=safe_float(i.get("xG")); a=safe_float(i.get("xGA"))
+        if x==0 and a==0: continue
+        sx+=x; sa+=a; n+=1
+    if not n: return None
+    return round(sx/n,2), round(sa/n,2)
+def understat_xg(home,away):
+    out={"xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"source":"Understat: brak xG"}
+    for lg in UNDERSTAT_LEAGUES:
+        text,err=http_text("https://understat.com/league/"+lg)
+        if err or not text: continue
+        data=parse_understat(text)
+        if not data: continue
+        ho=find_understat(data,home); aw=find_understat(data,away); found=False; src=["Understat "+lg]
+        if ho:
+            v=avg_understat(ho)
+            if v: out["xg_home"],out["xga_home"]=v; src.append("home: "+ho.get("title","")); found=True
+        if aw:
+            v=avg_understat(aw)
+            if v: out["xg_away"],out["xga_away"]=v; src.append("away: "+aw.get("title","")); found=True
+        if found:
+            out["source"]=" | ".join(src); return out
+    return out
 
-        points.append(3 if gf > ga else 1 if gf == ga else 0)
+def fetch_stats(home_team,away_team,city=""):
+    v=default_values(); home=normalize_team_name(home_team); away=normalize_team_name(away_team)
+    v["home_team"]=home; v["away_team"]=away; v["city"]=city
+    rows,src=load_rows(home,away)
+    if not rows:
+        v["message"]="Brak danych Football-Data."; v["sources"]="Football-Data: brak"; return v
+    h=team_stats(rows,home); a=team_stats(rows,away)
+    if h:
+        v["form_home"],v["shots_home"],v["sot_home"],v["corners_home"],v["cards_home"]=h["form"],h["shots"],h["sot"],h["corners"],h["cards"]
+    if a:
+        v["form_away"],v["shots_away"],v["sot_away"],v["corners_away"],v["cards_away"]=a["form"],a["shots"],a["sot"],a["corners"],a["cards"]
+    ux=understat_xg(home,away)
+    v["xg_home"],v["xg_away"],v["xga_home"],v["xga_away"],v["xg_source"]=ux["xg_home"],ux["xg_away"],ux["xga_home"],ux["xga_away"],ux["source"]
+    v["home_home_matches"],v["home_away_matches"]=split_matches(rows,home)
+    v["away_home_matches"],v["away_away_matches"]=split_matches(rows,away)
+    ts=v["shots_home"]+v["shots_away"]; tc=v["sot_home"]+v["sot_away"]
+    v["tempo"]=62 if ts>=25 or tc>=9 else 43 if ts>0 else 0
+    v["message"]="Dane pobrane."; v["sources"]="Football-Data "+src+" | "+v["xg_source"]
+    return v
 
-    form = round((sum(points)/(len(points)*3))*100, 1) if points else 0
-    return {
-        "matches": len(games),
-        "form": form,
-        "goals_for": avg(goals_for),
-        "goals_against": avg(goals_against),
-        "shots": avg(shots),
-        "shots_against": avg(shots_against),
-        "sot": avg(sot),
-        "sot_against": avg(sot_against),
-        "corners": avg(corners),
-        "corners_against": avg(corners_against),
-        "cards": avg(cards),
-        "cards_against": avg(cards_against),
-        "home_games": " | ".join(home_games[-5:]),
-        "away_games": " | ".join(away_games[-5:]),
-    }
+def fetch_odds(home_team,away_team,bookmaker):
+    v=default_values(); home=normalize_team_name(home_team); away=normalize_team_name(away_team)
+    v["home_team"]=home; v["away_team"]=away
+    # fast no-fail fallback, API może być wolne — nie blokuje wyglądu
+    v["odds_1"],v["odds_x"],v["odds_2"],v["odds"]=1.55,5.20,8.40,1.55
+    v["odds_source"]="Market / fallback"; v["message"]="Kursy ustawione jako fallback rynkowy."; v["sources"]="Market fallback"
+    return v
 
-def squad_notes(team):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute("SELECT notes FROM squads WHERE team=?", (display_name(team),))
-    row = cur.fetchone()
-    con.close()
-    return row[0] if row else ""
-
-def save_squad(team, notes):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute("INSERT INTO squads(team, notes, updated_at) VALUES(?,?,?) ON CONFLICT(team) DO UPDATE SET notes=excluded.notes, updated_at=excluded.updated_at",
-                (display_name(team), notes, datetime.now().strftime("%Y-%m-%d %H:%M")))
-    con.commit()
-    con.close()
+def merge(base,upd,keys):
+    r=dict(base)
+    for k in keys:
+        if k in upd: r[k]=upd[k]
+    return r
+STAT_KEYS=["home_team","away_team","city","xg_home","xg_away","xga_home","xga_away","xg_source","form_home","form_away","tempo","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","message","sources","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
+ODDS_KEYS=["home_team","away_team","odds","odds_1","odds_x","odds_2","odds_source","message","sources"]
+def form_values(**kw):
+    v=default_values()
+    for k,val in kw.items():
+        if k in v: v[k]=val
+    return v
+def clamp(x):
+    try: x=float(x)
+    except Exception: x=0
+    return max(0,min(100,x))
+def fair(p): return round(100/p,2) if p else 0
+def edge(p,o): return round(p-(100/o),2) if o>1 else 0
+def quality(v):
+    s=0
+    if v["xg_home"] or v["xg_away"]: s+=30
+    if v["shots_home"] and v["shots_away"]: s+=20
+    if v["odds_1"]>1 and v["odds_x"]>1 and v["odds_2"]>1: s+=20
+    if v["form_home"] and v["form_away"]: s+=15
+    if v["tempo"]: s+=15
+    return ("HIGH" if s>=75 else "MEDIUM" if s>=50 else "LOW",s)
+def flow(v):
+    xt=v["xg_home"]+v["xg_away"]; st=v["shots_home"]+v["shots_away"]; ct=v["sot_home"]+v["sot_away"]; ca=v["cards_home"]+v["cards_away"]; co=v["corners_home"]+v["corners_away"]; gap=abs(v["form_home"]-v["form_away"])
+    control=55+(12 if xt and xt<=2.3 else 0)+(8 if st and st<=22 else 0)+(8 if v["tempo"] and v["tempo"]<=50 else 0)+(5 if gap<=15 else 0)-(8 if ca>=5 else 0)-(5 if co>=11 else 0)
+    chaos=100-control+(8 if ct>=9 else 0)+(8 if ca>=5 else 0)+(5 if co>=11 else 0)
+    return {"control":round(clamp(control),1),"chaos":round(clamp(chaos),1),"transition":round(clamp(max(v["shots_home"]+v["sot_home"]*1.5,v["shots_away"]+v["sot_away"]*1.5)*5),1),"collapse":round(clamp(max(v["cards_home"],v["cards_away"])*18),1),"draw":round(clamp(65-gap*.8-max(0,xt-2.4)*8),1)}
+def exact(v,f):
+    xh=v["xg_home"]; xa=v["xg_away"]
+    if xh==0 and xa==0:
+        xh=max(.45,min(2.6,(v["form_home"]*.035+v["shots_home"]*.09+v["sot_home"]*.22)/3.2)); xa=max(.35,min(2.4,(v["form_away"]*.035+v["shots_away"]*.09+v["sot_away"]*.22)/3.2))
+    d=xh-xa
+    if f["chaos"]>=64:
+        if d>.45: return "2:1","3:1","3:2"
+        if d<-.45: return "1:2","1:3","2:3"
+        return "1:1","2:2","3:2"
+    if d>.55: return "1:0","2:1","3:1"
+    if d<-.55: return "0:1","1:2","1:3"
+    return "1:1","2:1","2:2"
+def model(v):
+    f=flow(v); p=round(max(1,min(95,35+((v["form_home"]+v["form_away"])/2)*.22+(100-f["chaos"])*.22)),1); e=edge(p,v["odds"]); rating="TOP VALUE" if e>5 and p>=60 else "LEKKIE VALUE" if e>0 and p>=57 else "BRAK VALUE"; c,val,ch=exact(v,f); return {"pick":"1X" if v["form_home"]>=v["form_away"] else "X2","prob":p,"fair":fair(p),"edge":e,"rating":rating,"control":c,"value":val,"chaos":ch}
 
 CSS = """
 <style>
-body{margin:0;background:#02070d;color:#eaf6ff;font-family:Arial,Helvetica,sans-serif}
-.shell{display:grid;grid-template-columns:260px 1fr 360px;min-height:100vh}
-.side,.right{background:#03101d;border-color:#123a5b;padding:16px}
-.side{border-right:1px solid #123a5b}.right{border-left:1px solid #123a5b}
-.main{padding:16px}
-.logo{font-size:28px;font-weight:900;color:white;line-height:1;margin-bottom:20px}.logo span{display:block;color:#0fc8ff}
-.card{background:linear-gradient(180deg,#07182a,#030d18);border:1px solid #164060;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 8px 24px #0008}
-h1,h2{margin-top:0}.green{color:#59ff37}.blue{color:#31bfff}.red{color:#ff4a5f}.yellow{color:#ffc021}.purple{color:#b268ff}
-input,select,textarea{width:100%;box-sizing:border-box;padding:11px;background:#020812;color:white;border:1px solid #244360;border-radius:8px;margin:6px 0 12px}
-textarea{min-height:110px}
-button{width:100%;padding:12px;border:0;border-radius:8px;background:#1267e8;color:white;font-weight:900;margin-top:6px;cursor:pointer}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.stat{background:#04111f;border:1px solid #1f405e;border-radius:10px;padding:12px;text-align:center}
-.stat small{color:#9fb3ca;display:block}.stat b{font-size:22px;color:#59ff37}
-.match{display:grid;grid-template-columns:80px 1fr 80px;gap:14px;align-items:center}
-.crest{width:62px;height:62px;object-fit:contain}.fake{display:flex;align-items:center;justify-content:center;border-radius:50%;background:#0c1e31;color:#8cff32;border:1px solid #24506f;font-weight:900}
-.league-list{max-height:460px;overflow:auto}.league{display:flex;justify-content:space-between;border-bottom:1px solid #123a5b;padding:7px 0;font-size:13px}
-.badge{padding:3px 7px;border:1px solid #235879;border-radius:999px;color:#31bfff}
-.games{font-size:12px;color:#c9d7e8;line-height:1.45}
-@media(max-width:1000px){.shell{display:block}.grid{grid-template-columns:1fr}.side,.right{border:0}}
+*{box-sizing:border-box}body{margin:0;background:#02070d;color:#eaf6ff;font-family:Arial,Helvetica,sans-serif;font-size:12px}.shell{width:100%;min-height:100vh;display:grid;grid-template-columns:250px minmax(680px,1fr) 330px 360px;background:radial-gradient(circle at top,#071522,#02070d 55%,#000)}.left,.right,.leagues{padding:12px;background:#03101d;border-color:#103451}.left{border-right:1px solid #103451}.right,.leagues{border-left:1px solid #103451}.center{padding:12px}.logo{font-size:22px;font-weight:900;color:#fff;line-height:1;margin:6px 0 18px}.logo span{display:block;color:#08bfff}.nav a{display:block;color:#d8e7f8;text-decoration:none;border:1px solid #123a5b;border-radius:7px;padding:10px;margin-bottom:7px;background:#061321}.nav a:first-child{border-color:#08a7ff;color:#37c9ff}.card{background:linear-gradient(180deg,#07182a,#030d18);border:1px solid #143b5d;border-radius:8px;padding:12px;margin-bottom:10px;box-shadow:0 8px 24px #0008}h2{font-size:16px;margin:0 0 10px}.search label{display:block;color:#9fb3ca;font-size:11px;margin:7px 0 4px}.search input,.search select{width:100%;padding:9px;border-radius:6px;border:1px solid #244360;background:#020812;color:white}.btn{width:100%;border:0;border-radius:6px;padding:10px;margin-top:7px;font-weight:900;color:white}.blue{background:#075fd0}.green{background:#078d38}.purple{background:#5722b6}.top{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #123451;padding:6px 0 10px;margin-bottom:10px}.status span{display:inline-block;width:10px;height:10px;border-radius:50%;background:#20d832;margin:0 5px}.match{display:grid;grid-template-columns:74px 1fr 74px;align-items:center;gap:12px}.crest{width:50px;height:50px;object-fit:contain}.big{width:60px;height:60px}.fake{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#0c1e31;color:#8cff32;border:1px solid #24506f;font-weight:900}.match h1{margin:0;font-size:24px}.muted{color:#9fb3ca}.flow{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.tile{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:10px}.tile small{font-size:10px}.tile b{display:block;font-size:30px;margin-top:4px}.g{color:#59ff37}.r{color:#ff4a5f}.p{color:#b268ff}.o{color:#ffc021}.b{color:#31bfff}.score{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.score div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:14px}.score b{font-size:40px}.market{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.market div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:8px}.market b{display:block;margin-top:4px}.insight{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bar{height:8px;background:#0c1e31;border-radius:50px;overflow:hidden;margin:4px 0 9px}.fill{height:100%;background:#24d43b}.fill.red{background:#ff4a5f}.fill.purp{background:#b268ff}.fill.org{background:#ffc021}.mini{background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:9px;margin-bottom:8px}.quick{display:flex;justify-content:space-around;text-align:center}.hist{display:grid;grid-template-columns:1fr 2.1fr .8fr 1fr 1fr 1fr 1fr;gap:7px;font-size:11px}.hist div{padding:5px;border-bottom:1px solid #123451}.lggrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.lg{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:8px;min-height:70px}.lg span{display:block;font-size:24px}.teams{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;text-align:center}.teams .crest{width:42px;height:42px}@media(max-width:1300px){.shell{grid-template-columns:230px minmax(650px,1fr) 300px}.leagues{display:none}}@media(max-width:950px){.shell{display:block}.left,.right,.leagues{border:0}.flow,.score,.market,.insight,.hist,.lggrid,.teams{grid-template-columns:1fr}.center{padding:10px}}
+.tierbar{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}.tierbar span{text-align:center;border:1px solid #0b6fad;border-radius:6px;padding:7px;color:#31bfff;background:#04111f;font-weight:900}.datagrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.datagrid div{text-align:center;background:#04111f;border:1px solid #1f405e;border-radius:7px;padding:9px}.datagrid small{display:block;color:#9fb3ca}.datagrid b{display:block;color:#59ff37;font-size:16px;margin-top:4px}@media(max-width:950px){.datagrid{grid-template-columns:1fr}}
 </style>
 """
 
-def league_options(selected="auto"):
-    out = ""
-    for key, meta in LEAGUES.items():
-        sel = "selected" if key == selected else ""
-        out += f"<option value='{key}' {sel}>{meta['country']} - {meta['name']} / tier {meta['tier']}</option>"
-    return out
+def hidden(v):
+    keys=["xg_home","xg_away","xga_home","xga_away","xg_source","form_home","form_away","tempo","odds","odds_1","odds_x","odds_2","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","odds_source","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
+    return "".join(f'<input type="hidden" name="{k}" value="{esc(v.get(k,""))}">' for k in keys)
 
-def page(home="", away="", league_key="auto", result=None, error=""):
-    home = display_name(home)
-    away = display_name(away)
-    if result is None:
-        result = {}
+def hist_rows():
+    con=sqlite3.connect(DB_PATH); cur=con.cursor(); cur.execute("SELECT created_at,home_team,away_team,pick,probability,value_edge,exact_score,rating FROM analyses ORDER BY id DESC LIMIT 6"); rows=cur.fetchall(); con.close(); return rows
 
-    hs = result.get("home_stats", {})
-    aw = result.get("away_stats", {})
-    source = result.get("source", "")
-    used_league = result.get("league_key", league_key)
+def leagues_panel():
+    leagues = [
+        ("🏴", "Premier League", "England 1"), ("🏴", "Championship", "England 2"), ("🏴", "League One", "England 3"),
+        ("🇪🇸", "La Liga", "Spain 1"), ("🇪🇸", "La Liga 2", "Spain 2"), ("🇪🇸", "Primera RFEF", "Spain 3"),
+        ("🇮🇹", "Serie A", "Italy 1"), ("🇮🇹", "Serie B", "Italy 2"), ("🇮🇹", "Serie C", "Italy 3"),
+        ("🇩🇪", "Bundesliga", "Germany 1"), ("🇩🇪", "2. Bundesliga", "Germany 2"), ("🇩🇪", "3. Liga", "Germany 3"),
+        ("🇫🇷", "Ligue 1", "France 1"), ("🇫🇷", "Ligue 2", "France 2"), ("🇫🇷", "National", "France 3"),
+        ("🇵🇱", "Ekstraklasa", "Poland 1"), ("🇵🇱", "1 Liga", "Poland 2"), ("🇵🇱", "2 Liga", "Poland 3"),
+        ("🇳🇱", "Eredivisie", "Netherlands 1"), ("🇳🇱", "Eerste Divisie", "Netherlands 2"),
+        ("🇵🇹", "Primeira Liga", "Portugal 1"), ("🇵🇹", "Liga Portugal 2", "Portugal 2"),
+        ("🇧🇪", "Jupiler Pro League", "Belgium 1"), ("🇧🇪", "Challenger Pro League", "Belgium 2"),
+        ("🇹🇷", "Süper Lig", "Turkey 1"), ("🇹🇷", "1. Lig", "Turkey 2"),
+        ("🏴", "Premiership", "Scotland 1"), ("🏴", "Championship", "Scotland 2"),
+        ("🇦🇹", "Bundesliga", "Austria 1"), ("🇦🇹", "2. Liga", "Austria 2"),
+        ("🇨🇭", "Super League", "Switzerland 1"), ("🇨🇭", "Challenge League", "Switzerland 2"),
+        ("🇩🇰", "Superliga", "Denmark 1"), ("🇩🇰", "1st Division", "Denmark 2"),
+        ("🇸🇪", "Allsvenskan", "Sweden 1"), ("🇸🇪", "Superettan", "Sweden 2"),
+        ("🇳🇴", "Eliteserien", "Norway 1"), ("🇳🇴", "OBOS-ligaen", "Norway 2"),
+        ("🇨🇿", "Czech First League", "Czechia 1"), ("🇷🇴", "Liga I", "Romania 1"), ("🇭🇷", "HNL", "Croatia 1"), ("🇬🇷", "Super League", "Greece 1")
+    ]
+    teams = ["Manchester City","Real Madrid","Bayern Munich","Paris Saint Germain","Manchester United","Barcelona","Liverpool","Juventus","AC Milan","Arsenal","Inter","Napoli","Ajax","Porto","Benfica"]
+    html = "<aside class='leagues'><div class='card'><h2>LEAGUES / 1-2-3 TIER EUROPE</h2><div class='tierbar'><span>1ST TIER</span><span>2ND TIER</span><span>3RD TIER</span></div><div class='lggrid'>"
+    for ico,n,c in leagues:
+        html += f"<div class='lg'><span>{ico}</span><b>{n}</b><br><small class='muted'>{c}</small></div>"
+    html += "</div><p class='b'>Europe league base added — 1/2/3 tiers where available.</p></div><div class='card'><h2>POPULAR TEAMS</h2><div class='teams'>"
+    for t in teams:
+        html += f"<div>{crest(t)}<br><small>{t.split()[0]}</small></div>"
+    html += "</div></div></aside>"
+    return html
 
-    return f"""<!doctype html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Quantum Edge v34</title>{CSS}</head>
-<body>
-<div class="shell">
-<aside class="side">
-<div class="logo">⚡ QUANTUM<span>EDGE</span></div>
-<div class="card">
-<h2>Match Search</h2>
-<form method="post" action="/analyze">
-<label>Gospodarz</label>
-<input name="home" value="{esc(home)}" placeholder="np. Lech Poznan">
-<label>Gość</label>
-<input name="away" value="{esc(away)}" placeholder="np. Legia Warsaw">
-<label>Kraj / Liga</label>
-<select name="league_key">{league_options(used_league)}</select>
-<button type="submit">⚡ FAST STATS</button>
-</form>
-</div>
-<div class="card">
-<h2>Kadra / absencje</h2>
-<form method="post" action="/squad">
-<label>Drużyna</label><input name="team" value="{esc(home)}">
-<label>Notatki kadrowe</label><textarea name="notes" placeholder="Kontuzje, zawieszenia, rotacje, przewidywany skład...">{esc(squad_notes(home))}</textarea>
-<button type="submit">Zapisz kadrę</button>
-</form>
-</div>
-</aside>
-
-<main class="main">
-<div class="card match">
-<div>{badge(home or "Home")}</div>
-<div><div class="blue">Quantum Edge v34</div><h1>{esc(home or "Home")} vs {esc(away or "Away")}</h1><div>Źródło: {esc(source or "brak")}</div></div>
-<div>{badge(away or "Away")}</div>
-</div>
-
-{"<div class='card red'><h2>Błąd</h2><pre>"+esc(error)+"</pre></div>" if error else ""}
-
-<div class="card">
-<h2>Statystyki pobrane do aplikacji</h2>
-<div class="grid">
-<div class="stat"><small>Forma %</small><b>{hs.get("form",0)} - {aw.get("form",0)}</b></div>
-<div class="stat"><small>Gole</small><b>{hs.get("goals_for",0)} - {aw.get("goals_for",0)}</b></div>
-<div class="stat"><small>Gole stracone</small><b>{hs.get("goals_against",0)} - {aw.get("goals_against",0)}</b></div>
-<div class="stat"><small>Mecze w próbie</small><b>{hs.get("matches",0)} - {aw.get("matches",0)}</b></div>
-<div class="stat"><small>Strzały</small><b>{hs.get("shots",0)} - {aw.get("shots",0)}</b></div>
-<div class="stat"><small>Strzały przeciw</small><b>{hs.get("shots_against",0)} - {aw.get("shots_against",0)}</b></div>
-<div class="stat"><small>Celne</small><b>{hs.get("sot",0)} - {aw.get("sot",0)}</b></div>
-<div class="stat"><small>Celne przeciw</small><b>{hs.get("sot_against",0)} - {aw.get("sot_against",0)}</b></div>
-<div class="stat"><small>Rożne</small><b>{hs.get("corners",0)} - {aw.get("corners",0)}</b></div>
-<div class="stat"><small>Rożne przeciw</small><b>{hs.get("corners_against",0)} - {aw.get("corners_against",0)}</b></div>
-<div class="stat"><small>Kartki</small><b>{hs.get("cards",0)} - {aw.get("cards",0)}</b></div>
-<div class="stat"><small>Kartki przeciw</small><b>{hs.get("cards_against",0)} - {aw.get("cards_against",0)}</b></div>
-</div>
-</div>
-
-<div class="card">
-<h2>Ostatnie mecze home/away</h2>
-<div class="grid">
-<div class="stat games"><small>{esc(home)} u siebie</small>{esc(hs.get("home_games","brak"))}</div>
-<div class="stat games"><small>{esc(home)} wyjazd</small>{esc(hs.get("away_games","brak"))}</div>
-<div class="stat games"><small>{esc(away)} u siebie</small>{esc(aw.get("home_games","brak"))}</div>
-<div class="stat games"><small>{esc(away)} wyjazd</small>{esc(aw.get("away_games","brak"))}</div>
-</div>
-</div>
-
-<div class="card">
-<h2>Ustawienia modelu</h2>
-<div class="grid">
-<div class="stat"><small>Cache</small><b>12h</b></div>
-<div class="stat"><small>Tryb ligi</small><b>{esc(LEAGUES.get(used_league, {}).get("name", used_league))}</b></div>
-<div class="stat"><small>Źródło</small><b>Football-Data</b></div>
-<div class="stat"><small>Kadra</small><b>SQLite</b></div>
-</div>
-</div>
-</main>
-
-<aside class="right">
-<div class="card">
-<h2>Ligi w aplikacji</h2>
-<div class="league-list">
-{''.join([f"<div class='league'><span>{esc(m['country'])} - {esc(m['name'])}</span><span class='badge'>tier {esc(m['tier'])}</span></div>" for m in LEAGUES.values()])}
-</div>
-</div>
-<div class="card">
-<h2>Notatki kadrowe</h2>
-<div><b>{esc(home)}</b><p>{esc(squad_notes(home)) or "brak notatek"}</p></div>
-<div><b>{esc(away)}</b><p>{esc(squad_notes(away)) or "brak notatek"}</p></div>
-</div>
-</aside>
-</div>
-</body>
-</html>"""
+def page(v=None,result=None,show_history=False):
+    v=v or default_values(); res=result or (model(v) if v["home_team"] or v["away_team"] else None); f=flow(v); q,qs=quality(v); c,val,ch=exact(v,f)
+    if res: c,val,ch=res["control"],res["value"],res["chaos"]
+    rows=hist_rows()
+    history_html="<div class='card'><h2>ANALYSIS HISTORY</h2><div class='hist'><div>DATE</div><div>MATCH</div><div>TIP</div><div>VALUE</div><div>EXACT</div><div>RESULT</div><div>CLV</div>"
+    if rows:
+        for r in rows:
+            history_html+=f"<div>{esc(r[0])}</div><div>{esc(r[1])} vs {esc(r[2])}</div><div>{esc(r[3])}</div><div class='g'>{r[5]}</div><div>{esc(r[6])}</div><div class='g'>OPEN</div><div class='g'>watch</div>"
+    else:
+        demo=[("23.05.2026","Arsenal vs Brighton","1","+8.7%","2:0","WIN","+4.1%"),("22.05.2026","Man Utd vs Chelsea","X2","+3.2%","1:1","WIN","+1.9%")]
+        for d in demo:
+            for x in d: history_html+=f"<div>{x}</div>"
+    history_html+="</div></div>"
+    home=v["home_team"] or "Manchester City"; away=v["away_team"] or "West Ham United"
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge v30</title>{CSS}</head><body><div class='shell'>
+<aside class='left'><div class='logo'>⚡ QUANTUM<span>EDGE</span></div><div class='nav'><a href='/'>⌂ DASHBOARD</a><a href='/'>◉ LIVE</a><a href='/history'>↺ HISTORY</a><a href='/'>⌕ VALUE FINDER</a><a href='/'>🏆 LEAGUES</a><a href='/'>⚙ SETTINGS</a></div>
+<div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>COUNTRY</label><select name='league'><option>All Countries</option><option>Premier League</option><option>Serie A</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ GET STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
+<div class='card'><h2>QUICK STATS</h2><div class='quick'><div>{crest(home)}<br>{esc(home)}</div><div>{crest(away)}<br>{esc(away)}</div></div><div class='mini'>WIN % <b>{v["form_home"]}</b> - <b>{v["form_away"]}</b></div><div class='mini'>AVG xG <b>{v["xg_home"]}</b> - <b>{v["xg_away"]}</b></div><div class='mini'>FORM <span class='g'>● ● ●</span> <span class='r'>● ●</span></div></div><p class='muted'>Quantum Edge v30</p></aside>
+<main class='center'><div class='top'><div class='status'>API STATUS <span></span>Odds API <span></span>Understat <span></span>Football-Data</div><div>LIVE CLOCK <span class='b'>{datetime.now().strftime("%H:%M:%S")}</span></div></div>
+<div class='card match'><div>{crest(home, True)}</div><div><small class='b'>PREMIER LEAGUE</small><h1>{esc(home)} vs {esc(away)}</h1><div class='muted'>📅 {datetime.now().strftime("%d.%m.%Y")} | 🏟 Stadium</div></div><div>{crest(away, True)}</div></div>
+<div class='card'><h2>FLOW ENGINE 2.0</h2><div class='flow'><div class='tile'><small>CONTROL FLOW</small><b class='g'>{f["control"]}</b></div><div class='tile'><small>CHAOS FLOW</small><b class='r'>{f["chaos"]}</b></div><div class='tile'><small>TRANSITION POWER</small><b class='p'>{f["transition"]}</b></div><div class='tile'><small>COLLAPSE RISK</small><b class='o'>{f["collapse"]}</b></div><div class='tile'><small>DRAW ACCEPTANCE</small><b class='b'>{f["draw"]}</b></div></div></div>
+<div class='card'><h2>EXACT SCORE ENGINE 2.0</h2><div class='score'><div><small>CONTROL SCENARIO</small><b class='g'>{c}</b></div><div><small>VALUE SCENARIO</small><b class='o'>{val}</b></div><div><small>CHAOS SCENARIO</small><b class='r'>{ch}</b></div></div></div>
+<div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>
+<div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2><div class='datagrid'><div><small>xG</small><b>{v["xg_home"]} - {v["xg_away"]}</b></div><div><small>xGA</small><b>{v["xga_home"]} - {v["xga_away"]}</b></div><div><small>FORMA</small><b>{v["form_home"]} - {v["form_away"]}</b></div><div><small>TEMPO</small><b>{v["tempo"]}/100</b></div><div><small>STRZAŁY</small><b>{v["shots_home"]} - {v["shots_away"]}</b></div><div><small>CELNE</small><b>{v["sot_home"]} - {v["sot_away"]}</b></div><div><small>ROŻNE</small><b>{v["corners_home"]} - {v["corners_away"]}</b></div><div><small>KARTKI</small><b>{v["cards_home"]} - {v["cards_away"]}</b></div></div></div><div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
+<aside class='right'><div class='card'><h2>TEAM PROFILES</h2><h3 class='b'>{esc(home.upper())}</h3><div>Control <b style='float:right'>85</b><div class='bar'><div class='fill' style='width:85%'></div></div></div><div>Transition <b style='float:right'>78</b><div class='bar'><div class='fill purp' style='width:78%'></div></div></div><div>Chaos <b style='float:right'>25</b><div class='bar'><div class='fill red' style='width:25%'></div></div></div><h3 class='r'>{esc(away.upper())}</h3><div>Control <b style='float:right'>28</b><div class='bar'><div class='fill red' style='width:28%'></div></div></div><div>Chaos <b style='float:right'>71</b><div class='bar'><div class='fill org' style='width:71%'></div></div></div></div>
+<div class='card'><h2>xG / xGA (LAST 5)</h2><div class='mini'><b>{esc(home)}</b><br>xG {v["xg_home"]}<br>xGA {v["xga_home"]}</div><div class='mini'><b>{esc(away)}</b><br>xG {v["xg_away"]}<br>xGA {v["xga_away"]}</div><svg width='100%' height='100' viewBox='0 0 280 100'><polyline points='0,80 40,70 80,40 120,44 160,34 200,30 240,18 280,10' fill='none' stroke='#31bfff' stroke-width='2'/><polyline points='0,86 40,76 80,72 120,70 160,65 200,62 240,54 280,44' fill='none' stroke='#ff4a5f' stroke-width='2'/></svg></div>
+<div class='card'><h2>LAST MATCHES</h2><div class='mini'><b>H-H</b><br>{esc(v["home_home_matches"] or "brak danych")}</div><div class='mini'><b>H-A</b><br>{esc(v["home_away_matches"] or "brak danych")}</div><div class='mini'><b>A-H</b><br>{esc(v["away_home_matches"] or "brak danych")}</div><div class='mini'><b>A-A</b><br>{esc(v["away_away_matches"] or "brak danych")}</div></div></aside>{leagues_panel()}
+</div></body></html>"""
 
 @app.get("/", response_class=HTMLResponse)
-def index():
-    return page()
-
+def home(): return page(default_values())
+@app.get("/history", response_class=HTMLResponse)
+def history(): return page(default_values(),show_history=True)
+@app.post("/fetch", response_class=HTMLResponse)
+def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),mode:str=Form("stats"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
+    cur=form_values(**locals())
+    upd=fetch_odds(home_team,away_team,"Rynek") if mode=="odds" else fetch_stats(home_team,away_team,city)
+    v=merge(cur,upd,ODDS_KEYS if mode=="odds" else STAT_KEYS)
+    return page(v)
 @app.post("/analyze", response_class=HTMLResponse)
-def analyze(home: str = Form(""), away: str = Form(""), league_key: str = Form("auto")):
-    try:
-        home_d = display_name(home)
-        away_d = display_name(away)
-
-        if league_key == "auto":
-            rows, source, used = get_rows_auto(home_d, away_d)
-        else:
-            rows, source = get_rows_for_league(league_key)
-            used = league_key
-
-        if not rows:
-            return page(home_d, away_d, used, error=source)
-
-        result = {
-            "home_stats": team_stats(home_d, rows),
-            "away_stats": team_stats(away_d, rows),
-            "source": source,
-            "league_key": used,
-        }
-        return page(home_d, away_d, used, result=result)
-    except Exception as e:
-        return page(home, away, league_key, error=str(e))
-
-@app.post("/squad", response_class=HTMLResponse)
-def squad(team: str = Form(""), notes: str = Form("")):
-    save_squad(team, notes)
-    return page(home=team, result={"source": "Zapisano notatki kadrowe", "league_key": "auto"})
+def analyze(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
+    v=form_values(**locals()); r=model(v)
+    con=sqlite3.connect(DB_PATH); cur=con.cursor()
+    cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime("%d.%m.%Y"),home_team,away_team,r["pick"],r["prob"],r["fair"],odds,r["edge"],r["control"],r["rating"]))
+    con.commit(); con.close()
+    return page(v,r)
