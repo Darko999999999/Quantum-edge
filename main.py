@@ -662,7 +662,7 @@ def select_page(rows=None,sources=None,scan_date=""):
         xs,total,tier,reason=select_score(r)
         scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
     scored.sort(key=lambda x:(-x["total"],x["date"],x["id"]))
-    master=[r for r in scored if r["tier"]!="HOLD"][:4]
+    # P11.2: MASTER accepts only A, then B-FILL. C/WATCH stay in SELECT only.\n    master=[r for r in scored if r["tier"] in ("A","B")][:4]
     body=""
     for r in scored:
         body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(r["date"])}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
