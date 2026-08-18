@@ -184,14 +184,16 @@ def http_text(url):
             return text,None
     except Exception as e:
         return "",str(e)
-def http_json(url, headers=None):
+def http_json(url, headers=None, timeout=3):
     if url in JSON_CACHE: return JSON_CACHE[url], None
     try:
         req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json",**(headers or {})})
-        with urllib.request.urlopen(req, timeout=3) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             data=json.loads(r.read().decode("utf-8",errors="ignore"))
             JSON_CACHE[url]=data
             return data,None
+    except urllib.error.HTTPError as e:
+        return None,f"HTTP {e.code}"
     except Exception as e:
         return None,str(e)
 
@@ -469,11 +471,16 @@ def api_global_rows(date_str):
         iso=datetime.now().strftime("%Y-%m-%d")
     out=[]; used=[]; seen=set()
     af=os.getenv("API_FOOTBALL_KEY","").strip()
-    if af:
-        data,err=http_json("https://v3.football.api-sports.io/fixtures?date="+iso,{"x-apisports-key":af})
-        if isinstance(data,dict):
-            used.append("API-Football")
-            for x in data.get("response",[]):
+    if not af:
+        used.append("API-Football: KEY MISSING")
+    else:
+        data,err=http_json("https://v3.football.api-sports.io/fixtures?date="+iso,{"x-apisports-key":af},timeout=10)
+        if err:
+            used.append("API-Football: ERROR "+err)
+        elif isinstance(data,dict):
+            fixtures=data.get("response",[])
+            used.append("API-Football: OK "+str(len(fixtures)))
+            for x in fixtures:
                 fx=x.get("fixture",{}); teams=x.get("teams",{})
                 home=(teams.get("home") or {}).get("name",""); away=(teams.get("away") or {}).get("name","")
                 if home and away:
@@ -482,10 +489,13 @@ def api_global_rows(date_str):
                         seen.add(key); out.append({"id":"AF-"+str(len(out)+1).zfill(5),"date":fx.get("date",""),"home":home,"away":away,"source":"API-Football"})
     sm=os.getenv("SPORTMONKS_TOKEN","").strip()
     if sm:
-        data,err=http_json("https://api.sportmonks.com/v3/football/fixtures/date/"+iso+"?api_token="+sm)
-        if isinstance(data,dict):
-            used.append("Sportmonks")
-            for x in data.get("data",[]):
+        data,err=http_json("https://api.sportmonks.com/v3/football/fixtures/date/"+iso+"?api_token="+sm,timeout=10)
+        if err:
+            used.append("Sportmonks: ERROR "+err)
+        elif isinstance(data,dict):
+            fixtures=data.get("data",[])
+            used.append("Sportmonks: OK "+str(len(fixtures)))
+            for x in fixtures:
                 parts=x.get("participants") or []
                 home=parts[0].get("name","") if parts else ""; away=parts[-1].get("name","") if len(parts)>1 else ""
                 if home and away:
@@ -527,10 +537,13 @@ def fixture_feed_rows(date_str):
     return out,used
 
 def select_rows_for_date(date_str):
-    # First use a live fixture feed; archive result CSVs are only a fallback.
+    # SELECT must report live-source failures instead of hiding them behind archive CSVs.
     rows,sources=fixture_feed_rows(date_str)
     if rows:
         return rows,sources
+    if sources:
+        return [],sources
+    return [],["NO LIVE FIXTURE SOURCE"] 
     rows=[]; seen=set(); sources=[]
     for url in FOOTBALL_DATA_URLS:
         text,err=http_text(url)
