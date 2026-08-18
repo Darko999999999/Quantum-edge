@@ -184,10 +184,10 @@ def http_text(url):
             return text,None
     except Exception as e:
         return "",str(e)
-def http_json(url):
+def http_json(url, headers=None):
     if url in JSON_CACHE: return JSON_CACHE[url], None
     try:
-        req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
+        req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json",**(headers or {})})
         with urllib.request.urlopen(req, timeout=3) as r:
             data=json.loads(r.read().decode("utf-8",errors="ignore"))
             JSON_CACHE[url]=data
@@ -470,7 +470,7 @@ def api_global_rows(date_str):
     out=[]; used=[]; seen=set()
     af=os.getenv("API_FOOTBALL_KEY","").strip()
     if af:
-        data,err=http_json("https://v3.football.api-sports.io/fixtures?date="+iso)
+        data,err=http_json("https://v3.football.api-sports.io/fixtures?date="+iso,{"x-apisports-key":af})
         if isinstance(data,dict):
             used.append("API-Football")
             for x in data.get("response",[]):
