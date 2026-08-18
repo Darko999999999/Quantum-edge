@@ -497,7 +497,6 @@ def api_global_rows(date_str):
 def fixture_feed_rows(date_str):
     # Broad fixture feed for SELECT. It is independent of odds and exact-score markets.
     global_rows,global_sources=api_global_rows(date_str)
-    if global_rows: return global_rows,global_sources
     try:
         if "." in (date_str or ""):
             date_str=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y%m%d")
@@ -506,7 +505,7 @@ def fixture_feed_rows(date_str):
     except Exception:
         date_str=datetime.now().strftime("%Y%m%d")
     leagues=["eng.1","eng.2","esp.1","ita.1","ger.1","fra.1","ned.1","por.1","bel.1","sco.1","pol.1","bra.1","arg.1","mex.1","usa.1","uefa.champions","uefa.europa","conmebol.libertadores","conmebol.sudamericana"]
-    out=[]; seen=set(); used=[]
+    out=list(global_rows); seen={(r['home'].lower(),r['away'].lower(),str(r.get('date',''))[:16]) for r in out}; used=list(global_sources)
     for league in leagues:
         url=f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
         data,err=http_json(url)
