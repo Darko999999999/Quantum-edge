@@ -445,8 +445,82 @@ def page(v=None,result=None,show_history=False):
 <div class='card'><h2>LAST MATCHES</h2><div class='mini'><b>H-H</b><br>{esc(v["home_home_matches"] or "brak danych")}</div><div class='mini'><b>H-A</b><br>{esc(v["home_away_matches"] or "brak danych")}</div><div class='mini'><b>A-H</b><br>{esc(v["away_home_matches"] or "brak danych")}</div><div class='mini'><b>A-A</b><br>{esc(v["away_away_matches"] or "brak danych")}</div></div></aside>{leagues_panel()}
 </div></body></html>"""
 
+
+SELECT_CSS = """
+.select-app{min-height:100vh;background:#06111f;color:#eaf6ff;font-family:Inter,system-ui,sans-serif;padding:18px}
+.select-wrap{max-width:1180px;margin:auto}.select-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:18px}
+.select-brand{font-size:28px;font-weight:900}.select-brand span{color:#27c5ff}.select-sub{color:#9eb4c9;margin-top:4px}
+.select-actions{display:flex;gap:10px;flex-wrap:wrap}.select-btn{border:0;border-radius:12px;padding:13px 18px;font-weight:800;color:#fff;background:#0878d1}
+.select-btn.master{background:#6630c8}.select-btn.secondary{background:#14304a}
+.select-card{background:linear-gradient(145deg,#102a43,#071525);border:1px solid #1c496d;border-radius:16px;padding:16px;margin-bottom:14px}
+.select-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.select-metric{background:#071827;border:1px solid #225174;border-radius:12px;padding:12px}.select-metric small{color:#9eb4c9;display:block}.select-metric b{font-size:24px;color:#67f542}
+.select-table{width:100%;border-collapse:collapse}.select-table th,.select-table td{text-align:left;padding:11px 8px;border-bottom:1px solid #1b3c59}.select-table th{color:#8edcff;font-size:12px}.select-table td{font-size:14px}
+.select-pill{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:800}.tier-a{background:#155d39;color:#9dffbd}.tier-b{background:#73540b;color:#ffe49a}.tier-c{background:#273c51;color:#b9d8ed}.hold{background:#6d2535;color:#ffc2c9}
+.select-check{width:18px;height:18px;accent-color:#27c5ff}.select-note{color:#a9bed0;font-size:13px;line-height:1.5}
+@media(max-width:760px){.select-app{padding:10px}.select-head{display:block}.select-actions{margin-top:14px}.select-grid{grid-template-columns:repeat(2,1fr)}.select-table{display:block;overflow-x:auto;white-space:nowrap}.select-table th,.select-table td{padding:10px 7px}.select-brand{font-size:24px}}
+"""
+
+def select_rows_for_date(date_str):
+    # Initial SELECT engine: only verified fixture rows from the configured source feed.
+    # It never uses odds or exact-score predictions.
+    rows=[]; seen=set(); sources=[]
+    for url in FOOTBALL_DATA_URLS:
+        text,err=http_text(url)
+        if err or not text: continue
+        try: data=list(csv.DictReader(io.StringIO(text)))
+        except Exception: continue
+        sources.append(url.split("/")[-1])
+        for r in data:
+            home=(r.get("HomeTeam") or "").strip(); away=(r.get("AwayTeam") or "").strip()
+            if not home or not away: continue
+            key=(home.lower(),away.lower(),r.get("Date",""))
+            if key in seen: continue
+            seen.add(key)
+            # Football-Data rows are retained as candidates only when the fixture is not completed.
+            if not (r.get("FTHG") or r.get("FTAG")):
+                rows.append({"id":"FD-"+str(len(rows)+1).zfill(5),"date":r.get("Date",""),"home":home,"away":away,"source":url.split("/")[-1]})
+    return rows,sources
+
+def select_score(row):
+    # XS01-XS06 are shown explicitly; this first version uses only source completeness.
+    xs=[2,1,1,1,1,1]
+    total=sum(xs)
+    tier="A" if total>=11 else "B" if total>=8 else "C"
+    return xs,total,tier,"F06" if row.get("source") else "F03"
+
+def select_page(rows=None,sources=None,scan_date=""):
+    rows=rows or []; sources=sources or []
+    scored=[]
+    for r in rows:
+        xs,total,tier,reason=select_score(r)
+        scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
+    scored.sort(key=lambda x:(-x["total"],x["date"],x["id"]))
+    master=scored[:4]
+    body=""
+    for r in scored:
+        body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(r["date"])}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
+    if not body: body="<tr><td colspan='8' class='select-note'>Brak zweryfikowanych meczów w aktualnym źródle. Skan nie tworzy sztucznych kandydatów.</td></tr>"
+    mbody="".join(f"<li>{esc(r['home'])} – {esc(r['away'])} · {r['total']} pkt · {r['tier']}</li>" for r in master)
+    if not mbody: mbody="<li>MASTER Queue pusta</li>"
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge SELECT</title><style>{SELECT_CSS}</style></head><body><main class='select-app'><div class='select-wrap'>
+<header class='select-head'><div><div class='select-brand'>⚡ QUANTUM <span>EDGE</span> SELECT</div><div class='select-sub'>P11.2 · NO ODDS · NO FINAL EXACT · pełny skan kandydatów</div></div><div class='select-actions'><form method='post' action='/select/scan'><input type='date' name='scan_date' value='{esc(scan_date)}'><button class='select-btn'>SKANUJ MECZE</button></form></div></header>
+<section class='select-card'><div class='select-grid'><div class='select-metric'><small>ŹRÓDŁA</small><b>{len(sources)}</b></div><div class='select-metric'><small>CANDIDATE POOL</small><b>{len(scored)}</b></div><div class='select-metric'><small>SHOWN</small><b>{len(scored)}</b></div><div class='select-metric'><small>MASTER QUEUE</small><b>{min(4,len(master))}</b></div></div><p class='select-note'>Coverage: {esc(", ".join(sources) or "nieuruchomiono")} · SELECT nie używa kursów, składów ani exact score.</p></section>
+<section class='select-card'><h2>SHORTLIST SELECT</h2><form method='post' action='/select/master'><div style='overflow-x:auto'><table class='select-table'><thead><tr><th></th><th>MATCH ID</th><th>MECZ</th><th>START</th><th>PROFIL</th><th>XS01–06</th><th>TIER / XS</th><th>REASON</th></tr></thead><tbody>{body}</tbody></table></div><div class='select-actions' style='margin-top:14px'><button class='select-btn master'>PRZEKAŻ ZAZNACZONE DO MASTER</button></div></form></section>
+<section class='select-card'><h2>MASTER QUEUE · MAKS. 4</h2><ol>{mbody}</ol><p class='select-note'>To jest kolejka przekazania do MASTER. SELECT nie podaje wyniku exact score.</p></section>
+</div></main></body></html>"""
+
 @app.get("/", response_class=HTMLResponse)
-def home(): return page(default_values())
+def home(): return select_page()
+
+@app.post("/select/scan", response_class=HTMLResponse)
+def select_scan(scan_date:str=Form("")):
+    rows,sources=select_rows_for_date(scan_date)
+    return select_page(rows,sources,scan_date)
+
+@app.post("/select/master", response_class=HTMLResponse)
+def select_master(match_id:list[str]=Form([])):
+    return select_page()
+
 @app.get("/history", response_class=HTMLResponse)
 def history(): return page(default_values(),show_history=True)
 @app.get("/fetch", response_class=HTMLResponse)
