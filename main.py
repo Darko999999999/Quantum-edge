@@ -435,6 +435,11 @@ def page(v=None,result=None,show_history=False):
 def home(): return page(default_values())
 @app.get("/history", response_class=HTMLResponse)
 def history(): return page(default_values(),show_history=True)
+@app.get("/fetch", response_class=HTMLResponse)
+def fetch_get():
+    """Keep direct /fetch links usable; the form submits to the POST route below."""
+    return page(default_values())
+
 @app.post("/fetch", response_class=HTMLResponse)
 def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),mode:str=Form("stats"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
     cur=form_values(**locals())
