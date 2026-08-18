@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse
 from datetime import datetime
 import sqlite3
 import os
-import urllib.request, urllib.parse, json, csv, io, difflib, re, html as html_lib
+import urllib.request, urllib.parse, urllib.error, json, csv, io, difflib, re, html as html_lib
 
 app = FastAPI(title="Quantum Edge v30")
 DB_PATH = "quantum_edge.db"
