@@ -460,9 +460,43 @@ SELECT_CSS = """
 @media(max-width:760px){.select-app{padding:10px}.select-head{display:block}.select-actions{margin-top:14px}.select-grid{grid-template-columns:repeat(2,1fr)}.select-table{display:block;overflow-x:auto;white-space:nowrap}.select-table th,.select-table td{padding:10px 7px}.select-brand{font-size:24px}}
 """
 
+
+def fixture_feed_rows(date_str):
+    # Broad fixture feed for SELECT. It is independent of odds and exact-score markets.
+    try:
+        if "." in (date_str or ""):
+            date_str=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y%m%d")
+        else:
+            date_str=datetime.strptime(date_str,"%Y-%m-%d").strftime("%Y%m%d")
+    except Exception:
+        date_str=datetime.now().strftime("%Y%m%d")
+    leagues=["eng.1","eng.2","esp.1","ita.1","ger.1","fra.1","ned.1","por.1","bel.1","sco.1","pol.1","bra.1","arg.1","mex.1","usa.1","uefa.champions","uefa.europa","conmebol.libertadores","conmebol.sudamericana"]
+    out=[]; seen=set(); used=[]
+    for league in leagues:
+        url=f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
+        data,err=http_json(url)
+        if err or not isinstance(data,dict): continue
+        used.append("ESPN:"+league)
+        for ev in data.get("events",[]):
+            comp=(ev.get("competitions") or [{}])[0]
+            teams=comp.get("competitors") or []
+            home=next((x.get("team",{}).get("displayName","") for x in teams if x.get("homeAway")=="home"),"")
+            away=next((x.get("team",{}).get("displayName","") for x in teams if x.get("homeAway")=="away"),"")
+            if not home or not away: continue
+            status=((ev.get("status") or {}).get("type") or {}).get("name","")
+            if status in {"STATUS_FINAL","STATUS_IN_PROGRESS","STATUS_FULL_TIME"}: continue
+            start=ev.get("date","")
+            key=(home.lower(),away.lower(),start[:16])
+            if key in seen: continue
+            seen.add(key)
+            out.append({"id":"ESPN-"+str(len(out)+1).zfill(5),"date":start,"home":home,"away":away,"source":"ESPN:"+league})
+    return out,used
+
 def select_rows_for_date(date_str):
-    # Initial SELECT engine: only verified fixture rows from the configured source feed.
-    # It never uses odds or exact-score predictions.
+    # First use a live fixture feed; archive result CSVs are only a fallback.
+    rows,sources=fixture_feed_rows(date_str)
+    if rows:
+        return rows,sources
     rows=[]; seen=set(); sources=[]
     for url in FOOTBALL_DATA_URLS:
         text,err=http_text(url)
