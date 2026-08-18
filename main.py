@@ -584,9 +584,38 @@ def select_rows_for_date(date_str):
                 rows.append({"id":"FD-"+str(len(rows)+1).zfill(5),"date":r.get("Date",""),"home":home,"away":away,"source":url.split("/")[-1]})
     return rows,sources
 
+def api_team_history(team_name, last=10):
+    """Fetch prematch history from API-Football without exposing the API key."""
+    key=os.getenv("API_FOOTBALL_KEY","").strip()
+    if not key: return []
+    q=urllib.parse.quote(team_name)
+    data,err=http_json("https://v3.football.api-sports.io/teams?search="+q,{"x-apisports-key":key},timeout=10)
+    teams=(data or {}).get("response",[]) if isinstance(data,dict) else []
+    if not teams: return []
+    team_id=((teams[0].get("team") or {}).get("id"))
+    if not team_id: return []
+    data,err=http_json("https://v3.football.api-sports.io/fixtures?team="+str(team_id)+"&last="+str(last),{"x-apisports-key":key},timeout=10)
+    out=[]
+    for x in ((data or {}).get("response",[]) if isinstance(data,dict) else []):
+        fx=x.get("fixture") or {}; teams=x.get("teams") or {}; goals=x.get("goals") or {}
+        home=((teams.get("home") or {}).get("name") or "").strip()
+        away=((teams.get("away") or {}).get("name") or "").strip()
+        hg=goals.get("home"); ag=goals.get("away")
+        if home and away and hg is not None and ag is not None:
+            out.append({"home":home,"away":away,"hg":safe_int(hg) or 0,"ag":safe_int(ag) or 0,"date":fx.get("date","")})
+    return out
+
+def select_history(row):
+    home=api_team_history(row.get("home",""),10)
+    away=api_team_history(row.get("away",""),10)
+    return home,away
+
 def select_score(row):
     # P11.2 FAST SCAN: prematch data only; no odds, lineups or exact-score output.
     rows,src=load_rows(row.get("home",""),row.get("away",""))
+    if not rows:
+        api_home,api_away=select_history(row)
+        rows=[{"HomeTeam":x["home"],"AwayTeam":x["away"],"FTHG":x["hg"],"FTAG":x["ag"],"Date":x["date"]} for x in api_home+api_away]
     if not rows:
         return [0,0,0,0,0,0],0,"HOLD","F03"
     h=team_stats(rows,row.get("home","")); a=team_stats(rows,row.get("away",""))
