@@ -631,10 +631,10 @@ def select_score(row):
         api_home,api_away=select_history(row)
         rows=[{"HomeTeam":x["home"],"AwayTeam":x["away"],"FTHG":x["hg"],"FTAG":x["ag"],"Date":x["date"]} for x in api_home+api_away]
     if not rows:
-        return [0,0,0,0,0,0],0,"HOLD","F03"
+        return [0,0,0,0,0,0],0,"HOLD","F03","UNVERIFIED"
     h=team_stats(rows,row.get("home","")); a=team_stats(rows,row.get("away",""))
     if not h or not a:
-        return [1,0,0,0,0,0],1,"HOLD","F03"
+        return [1,0,0,0,0,0],1,"HOLD","F03","UNVERIFIED"
     hg=[r for r in rows if match_team(r.get("HomeTeam",""),row.get("home","")) and safe_int(r.get("FTHG")) is not None][-10:]
     ag=[r for r in rows if match_team(r.get("AwayTeam",""),row.get("away","")) and safe_int(r.get("FTHG")) is not None][-10:]
     xs01=2 if len(hg)>=8 and len(ag)>=8 else 1 if len(hg)>=5 and len(ag)>=5 else 0
@@ -653,7 +653,7 @@ def select_score(row):
     xs=[xs01,xs02,xs03,xs04,xs05,xs06]
     total=sum(xs)
     tier="A" if total>=11 and 0 not in (xs01,xs04,xs06) else "B" if total>=8 else "C" if total>=6 else "WATCH"
-    return xs,total,tier,"F06" if total>=6 else "F03"
+    profile="BAL-L" if total<=3 else "STR-C" if high/len(totals)>=0.6 else "CTL-H" if h["form"]>=a["form"]+12 else "CTL-A" if a["form"]>=h["form"]+12 else "BAL-L"\n    return xs,total,tier,"F06" if total>=6 else "F03",profile
 
 def select_page(rows=None,sources=None,scan_date=""):
     rows=rows or []; sources=sources or []
