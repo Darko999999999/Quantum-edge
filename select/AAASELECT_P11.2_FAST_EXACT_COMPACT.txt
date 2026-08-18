@@ -1,0 +1,140 @@
+SELECT P11.2.1 FAST EXACT COMPACT
+Pełny skan terminarza -> szybka ocena exact-readiness -> jawna shortlista
+Wersja: 2026-08-14 | P11.2.1 QUANTITY FIX
+Integracja: P11.1 FAST + XS07 oraz użyteczne elementy V26.17
+Handover: Quantum Edge MASTER - CONTROL / VALUE / CHAOS
+Tryb: NO ODDS | NO FINAL EXACT | NO CONFIRMED LINEUP GATE
+Zasada nadrzędna: SELECT pokazuje szeroką listę kandydatów. Limit 4 dotyczy wyłącznie kolejki do MASTER-a i nigdy nie ogranicza raportu SELECT.
+1. Kontrakt operacyjny
+Daily Universe budujemy z co najmniej dwóch szerokich źródeł terminarzowych jako union, bez prefiltra kraju, ligi, popularności ani kursu.
+Technicznie sprawdzamy daty D-1, D i D+1, konwertujemy start na Europe/Warsaw i wyczerpujemy paginację/cursor każdego źródła.
+Calendar Universe obejmuje cały dzień D. Actionable Universe obejmuje tylko mecze nierozpoczęte od chwili skanu do 06:00 dnia D+1.
+FAST SCAN otrzymuje każdy mecz Actionable Universe. Każdy rekord kończy z CANDIDATE, HOLD, REJECT albo CLOSED oraz jednym reason code.
+SELECT nie używa kursów, rynku correct score, EPL ani finalnego Confidence i nie publikuje dokładnego wyniku.
+Wyjściowe składy nie są wymagane. Potencjalny skład może dać jedynie flagę ryzyka rotacji dla shortlisty.
+Każdy kandydat zachowuje Match ID, wynik XS, profil i pozycję rankingu. Kandydaci poza pierwszą partią MASTER pozostają widoczni.
+MASTER uruchamia ENGINE i podaje po jednym wyniku CONTROL, VALUE i CHAOS wraz z EPL/Confidence.
+2. Daily Universe i kompletność
+3. FAST SCAN - minimalny przesiew
+FAST SCAN nie analizuje meczu. Sprawdza tylko, czy istnieje wystarczająca podstawa do szybkiej oceny exact-readiness.
+Minimum danych:
+co najmniej 5 ostatnich meczów competitive każdej drużyny; preferowane 8-10;
+dla kandydata: ostatnie 5 HOME gospodarza, 5 AWAY gościa i 10 ogółem;
+gdy liga jest early season, dozwolony jawny fallback do poprzedniego sezonu lub porównywalnych meczów;
+brak potencjalnego składu nie obniża oceny i nie powoduje REJECT.
+4. XS - Exact Readiness Score
+Każdy CANDIDATE otrzymuje XS01-XS06 po 0-2 punkty. Kryteria są liczone z danych dostępnych przed meczem; nie wolno ich zmieniać po wyniku.
+XS BASE = XS01 + XS02 + XS03 + XS04 + XS05 + XS06 (0-12).
+XS07-NET = -2 do +2 z Historii meczów. Jeżeli aktualna Historia nie jest dostępna albo klaster ma zbyt małą próbę, XS07-NET = 0. Zakaz wymyślania boostu.
+SELECT RANK = XS BASE + XS07-NET. XS07 aktualizujemy partiami po minimum 20 nowych rozliczonych meczach, korzystając z trafień i nietrafień.
+5. Profile i szybkie flagi
+5.1 Potencjalne składy - tylko flaga rotacji
+Potencjalne składy sprawdzamy wyłącznie dla shortlisty, jeśli są szybko dostępne. Nigdy dla całego Universe i nigdy jako samodzielny powód REJECT.
+6. Tiering, liczba wyników i limit MASTER
+CANDIDATE POOL: policz wszystkie rekordy CANDIDATE po FAST SCAN. Ta liczba nie ma limitu 4.
+SHORTLIST DISPLAY: standardowo pokaż 12-20 meczów. Najpierw wszystkie A, potem B i C; gdy jest ich mniej niż 12, dodaj WATCH 4-5 z wyraźną etykietą. Jeżeli cały pool ma mniej niż 12, pokaż wszystkie i podaj przyczynę.
+MASTER QUEUE: przekaż tylko 4 najwyższe mecze. Gdy A jest mniej niż 4, uzupełnij kolejkę najlepszymi B i oznacz je B-FILL. WATCH nie trafia automatycznie do MASTER-a.
+Warunek ukończenia: SCAN COMPLETE tylko wtedy, gdy CANDIDATES = SHOWN + OVERFLOW. Overflow musi mieć liczbę oraz Match ID/mecz; nie wolno zakończyć raportu samą tabelą czterech spotkań.
+7. Flow wykonawczy
+Pobierz D-1/D/D+1 z minimum dwóch źródeł, wyczerp paginację i zbuduj source union.
+Przelicz czas na Europe/Warsaw; utwórz Calendar Universe i Actionable Universe.
+Wykonaj reconciliation, Night Audit oraz FAST SCAN każdego Actionable fixture.
+Dla wszystkich CANDIDATE pobierz wyłącznie pakiet 5 HOME / 5 AWAY / 10 overall i policz XS01-XS06.
+Dodaj profile CTL-H/CTL-A/BAL-L/STR-C oraz szybkie flagi. Potencjalne składy sprawdź tylko dla najwyższej shortlisty.
+Jeśli Historia jest dostępna, zastosuj aktualny XS07-NET; inaczej ustaw 0 i raportuj HISTORY NOT LOADED.
+Posortuj deterministycznie: SELECT RANK -> XS04 -> XS02 -> kompletność danych -> czas startu -> Match ID.
+Policz CANDIDATE POOL. Zbuduj SHORTLIST DISPLAY 12-20: A -> B -> C, a przy niedoborze WATCH 4-5.
+Pokaż jawny OVERFLOW i sprawdź równanie CANDIDATES = SHOWN + OVERFLOW. HOLD raportuj osobno.
+Zbuduj MASTER QUEUE maks. 4: najpierw A, a brakujące miejsca uzupełnij najlepszymi B jako B-FILL.
+8. Minimalny raport dzienny
+9. Handover do MASTER i pętla zwrotna
+Jeden trafiony mecz nie zmienia selektora automatycznie. Najpierw zapisujemy go w Historii; wpływ na XS07 pojawia się dopiero po zbiorczej kalibracji.
+10. Zakazy końcowe
+Zakaz rozpoczynania od listy ulubionych lig albo od rynku jednego bukmachera.
+Zakaz używania kursu, wartości rynkowej klubu, EPL lub Confidence jako hard gate SELECT.
+Zakaz preferowania z góry scoreline 1:0/2:0/2:1/3:0; scoreline wybiera dopiero MASTER.
+Zakaz stałych czarnych list lig na podstawie kilku ostatnich porażek; używaj dynamicznej flagi HV.
+Zakaz odrzucenia za brak potencjalnego składu; tylko wiarygodna rotacja może obniżyć XS06 lub dać HOLD.
+Zakaz ukrywania kandydata z powodu limitu 4; limit dotyczy tylko MASTER Queue.
+Zakaz zakończenia raportu czterema meczami, jeżeli istnieją dalsze A/B/C/WATCH.
+Zakaz deklarowania pełnej oferty bez source union, zakończonej paginacji, reconciliation i Night Audit.
+Zakaz retroaktywnej zmiany XS, profilu lub rankingu po poznaniu wyniku meczu.
+11. Koniec dokumentu
+Wersja: SELECT P11.2.1 FAST EXACT COMPACT | Data: 2026-08-14 | Status: QUANTITY FIX
+
+[TABLE 1]
+Element | Wymóg wykonawczy
+Źródła | Minimum 2 szerokie źródła; web search może jedynie weryfikować, nie zastępuje kompletnego feedu terminarza.
+Zakres dat | D-1 / D / D+1 -> konwersja do Europe/Warsaw -> Calendar oraz Actionable Universe.
+Reconciliation | MATCHED / SOURCE_ONLY / CONFLICT / VERIFIED_OFFICIAL. Brak w jednym źródle nie usuwa meczu.
+Deduplikacja | Usuwamy wyłącznie DUPLICATE, OUT_OF_WINDOW lub NON_FOOTBALL/NON_OFFICIAL, zawsze z reason code.
+Coverage | VERIFIED SOURCE UNION tylko po zakończeniu paginacji obu źródeł; inaczej PARTIAL SOURCE UNION.
+Night audit | D+1 00:00-06:00: FOUND musi równać się SCANNED.
+Raport | Universe, Actionable, rozgrywki, source-only/conflict, coverage i jawna lista nieocenionych.
+
+[TABLE 2]
+Kod | Znaczenie | Decyzja
+F01 | Fixture anulowany, nieaktywny lub nieoficjalny | REJECT
+F02 | Mecz rozpoczęty albo poza Actionable Universe | CLOSED
+F03 | Brak minimum danych również po fallbacku | HOLD
+F04 | Krytyczny konflikt nazwy, godziny lub statusu | HOLD
+F05 | Sparing, first leg, early season, cross-border lub wysoka wariancja | CANDIDATE + flaga
+F06 | Fixture potwierdzony i dostępne dane bazowe obu drużyn | CANDIDATE
+
+[TABLE 3]
+Kod | 2 punkty | 1 punkt | 0 punktów
+XS01 Dane | Obie drużyny: >=8 competitive + próbka venue/fallback, dane spójne | Obie >=5 i użyty jawny fallback | Próba zbyt mała lub konflikt
+XS02 Kompresja | Dominujący total band 0-1 / 2-3 / 4+ i ograniczone skrajności | Częściowa zgodność profili | Rozkład szeroki lub sprzeczny
+XS03 Kierunek | Minimum 3 sygnały zgodne: siła, forma, venue, zachowanie | 2 sygnały zgodne | Brak kierunku lub odwrócone sygnały
+XS04 Underdog | Co najmniej 3 z 4 sygnałów wskazują tę samą klasę U0/U1/U2+ | 2 z 4 wskazują tę samą klasę | Klasy są rozdzielone bez przewagi
+XS05 Faworyt | Stabilny band F1/F2/F3+ i powtarzalne domykanie prowadzenia | Band umiarkowanie stabilny | Szeroki sufit lub problemy z prowadzeniem
+XS06 Kontekst | Niski szum: jasna stawka, venue i normalny cykl | First leg, early season, travel lub LU2 | Niejasny cel, potwierdzona masowa rotacja lub chaos
+
+[TABLE 4]
+Tag | Znaczenie i użycie
+CTL-H | Controlled Home: czytelna przewaga gospodarza i stabilne zarządzanie wynikiem.
+CTL-A | Controlled Away: przewaga gościa potwierdzona formą wyjazdową i zachowaniem po prowadzeniu.
+BAL-L | Balanced Low Event: czytelny profil niskiego remisu/małej liczby goli; nie jest gorszy tylko dlatego, że brak faworyta.
+STR-C | Structured Chaos: podwyższony total, ale powtarzalne role bramkowe; dopuszczony tylko przy czytelnych klasach U/F.
+QG | Quality Gap: różnica jakości potwierdzona wynikami, formą i poziomem rywali; bez kursu i bez automatycznego bonusu za nazwę klubu.
+CL-RISK | Faworyt ma problemy z domykaniem, traci prowadzenie lub często dopuszcza gola w końcówce.
+HV | High Variance: częste 4+ goli, duże rozrzuty albo odwrócenia. Flaga dynamiczna, nigdy stała czarna lista ligi.
+FL / ES | Pierwszy mecz dwumeczu / early season. XS06 maksymalnie 1, chyba że dane porównywalne wyraźnie redukują szum.
+
+[TABLE 5]
+Flaga | Ocena | Wpływ
+LU0 | Brak wiarygodnych informacji | Neutralnie; brak kary
+LU1 | Wiarygodnie stabilny przewidywany skład | Neutralnie
+LU2 | Wiarygodne ryzyko większej rotacji | XS06 maksymalnie 1
+LU3 | Potwierdzona masowa rotacja przed cutoffem | HOLD do decyzji
+
+[TABLE 6]
+Tier | Warunek | Działanie
+A | SELECT RANK >=11 i brak zera w XS01, XS04 lub XS06 | Shortlista główna; pokaż wszystkie A.
+B | SELECT RANK 8-10 i brak hard gate | Shortlista główna; pokaż wszystkie B lub jawny overflow.
+C | SELECT RANK 6-7 i brak hard gate | Uzupełnia shortlistę do standardu 12-20.
+WATCH | SELECT RANK 4-5 i brak hard gate | Tylko jawne uzupełnienie do minimum 12; nie jest READY.
+HOLD | Krytyczny brak, konflikt lub LU3 | Osobna lista; nie analizować głęboko.
+
+[TABLE 7]
+Pole | Wartość wymagana
+Run | Data, Europe/Warsaw, Selection Timestamp, okno Actionable.
+Sources | Źródła, SOURCE EXHAUSTED YES/NO, VERIFIED/PARTIAL SOURCE UNION.
+Universe | Calendar / Actionable / Competitions / Night Found-Scanned.
+Coverage | FAST SCAN n/n, MATCHED, SOURCE_ONLY, CONFLICT, HOLD.
+Candidate Pool | Łączna liczba CANDIDATE po FAST SCAN; bez limitu 4.
+Shortlist | Standardowo 12-20: A/B/C, a przy niedoborze WATCH; Match ID, profil, XS i reason code.
+Overflow | Liczba oraz Match ID/mecz dla pozostałych kandydatów; niczego nie ukrywać.
+Completion | SCAN COMPLETE wyłącznie po potwierdzeniu CANDIDATES = SHOWN + OVERFLOW.
+MASTER | Queue maks. 4: Tier A, następnie B-FILL. Jest to osobna lista od shortlisty SELECT.
+
+[TABLE 8]
+Rank | Mecz / start | Profil i flagi | XS / XS07 / Rank | Tier / decyzja
+1 | [Gospodarz - Gość] [HH:MM] | [CTL-H] [CL-RISK/LU] | [10] / [+1] / [11] | A / MASTER B1
+
+[TABLE 9]
+Etap | Co zapisujemy
+SELECT PREMATCH | Match ID, Run ID, profil, XS01-XS06, XS07-NET, ranking, Tier i flagi - rekord zamrożony.
+MASTER PREMATCH | Po jednym exact score CONTROL/VALUE/CHAOS oraz EPL/Confidence; bez zmiany rekordu SELECT.
+POSTMATCH | Wynik rzeczywisty, Hit Control, Hit Value, Hit Chaos, Hit Any oraz Flow Hit w Historii meczów.
+RECALIBRATION | Po partii minimum 20 meczów: hit rate i failure rate klastrów -> nowy XS07-NET dla następnych runów.
