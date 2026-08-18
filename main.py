@@ -3,6 +3,7 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
 from datetime import datetime
 import sqlite3
+import os
 import urllib.request, urllib.parse, json, csv, io, difflib, re, html as html_lib
 
 app = FastAPI(title="Quantum Edge v30")
@@ -461,8 +462,42 @@ SELECT_CSS = """
 """
 
 
+def api_global_rows(date_str):
+    try:
+        iso=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y-%m-%d") if "." in (date_str or "") else datetime.strptime(date_str,"%Y-%m-%d").strftime("%Y-%m-%d")
+    except Exception:
+        iso=datetime.now().strftime("%Y-%m-%d")
+    out=[]; used=[]; seen=set()
+    af=os.getenv("API_FOOTBALL_KEY","").strip()
+    if af:
+        data,err=http_json("https://v3.football.api-sports.io/fixtures?date="+iso)
+        if isinstance(data,dict):
+            used.append("API-Football")
+            for x in data.get("response",[]):
+                fx=x.get("fixture",{}); teams=x.get("teams",{})
+                home=(teams.get("home") or {}).get("name",""); away=(teams.get("away") or {}).get("name","")
+                if home and away:
+                    key=(home.lower(),away.lower(),str(fx.get("date",""))[:16])
+                    if key not in seen:
+                        seen.add(key); out.append({"id":"AF-"+str(len(out)+1).zfill(5),"date":fx.get("date",""),"home":home,"away":away,"source":"API-Football"})
+    sm=os.getenv("SPORTMONKS_TOKEN","").strip()
+    if sm:
+        data,err=http_json("https://api.sportmonks.com/v3/football/fixtures/date/"+iso+"?api_token="+sm)
+        if isinstance(data,dict):
+            used.append("Sportmonks")
+            for x in data.get("data",[]):
+                parts=x.get("participants") or []
+                home=parts[0].get("name","") if parts else ""; away=parts[-1].get("name","") if len(parts)>1 else ""
+                if home and away:
+                    key=(home.lower(),away.lower(),str(x.get("starting_at",""))[:16])
+                    if key not in seen:
+                        seen.add(key); out.append({"id":"SM-"+str(len(out)+1).zfill(5),"date":x.get("starting_at",""),"home":home,"away":away,"source":"Sportmonks"})
+    return out,used
+
 def fixture_feed_rows(date_str):
     # Broad fixture feed for SELECT. It is independent of odds and exact-score markets.
+    global_rows,global_sources=api_global_rows(date_str)
+    if global_rows: return global_rows,global_sources
     try:
         if "." in (date_str or ""):
             date_str=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y%m%d")
