@@ -662,7 +662,7 @@ def select_page(rows=None,sources=None,scan_date=""):
     scored=[]
     for r in rows:
         xs,total,tier,reason=select_score(r)
-        scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":("BAL-L" if xs[1]==2 and total<=7 else "CTL-H" if xs[2]>=2 else "CTL-A" if xs[3]>=2 else "STR-C")})
+        scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
     scored.sort(key=lambda x:(-x["total"],x["date"],x["id"]))
     master=[r for r in scored if r["tier"]!="HOLD"][:4]
     body=""
