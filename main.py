@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import os
 import urllib.request, urllib.parse, urllib.error, json, csv, io, difflib, re, html as html_lib
@@ -664,7 +664,7 @@ def select_page(rows=None,sources=None,scan_date=""):
         xs,total,tier,reason=select_score(r)
         scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
     scored.sort(key=lambda x:(-x["total"],x["date"],x["id"]))
-    master=[r for r in scored if r["tier"]!="HOLD"][:4]
+    master=[r for r in scored if r["tier"] in ("A","B")][:4]
     body=""
     for r in scored:
         body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(r["date"])}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
@@ -683,8 +683,21 @@ def home(): return select_page()
 
 @app.post("/select/scan", response_class=HTMLResponse)
 def select_scan(scan_date:str=Form("")):
-    rows,sources=select_rows_for_date(scan_date)
-    return select_page(rows,sources,scan_date)
+    # P11.2 Daily Universe: D-1 / D / D+1, union and deterministic deduplication.
+    try:
+        center=datetime.strptime(scan_date,"%d.%m.%Y") if "." in (scan_date or "") else datetime.strptime(scan_date,"%Y-%m-%d")
+    except Exception:
+        center=datetime.now()
+    all_rows=[]; all_sources=[]; seen=set()
+    for delta in (-1,0,1):
+        day=(center+timedelta(days=delta)).strftime("%Y-%m-%d")
+        day_rows,day_sources=select_rows_for_date(day)
+        all_sources.extend(day_sources)
+        for row in day_rows:
+            key=(row.get("home","").strip().lower(),row.get("away","").strip().lower(),str(row.get("date",""))[:16])
+            if key not in seen:
+                seen.add(key); all_rows.append(row)
+    return select_page(all_rows,sorted(set(all_sources)),scan_date)
 
 @app.post("/select/master", response_class=HTMLResponse)
 def select_master(match_id:list[str]=Form([])):
