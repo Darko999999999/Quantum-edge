@@ -165,7 +165,7 @@ def match_team(api_name, user_name):
     a,b = norm(api_name), norm(normalize_team_name(user_name))
     if not a or not b: return False
     if a == b or b in a or a in b: return True
-    return difflib.SequenceMatcher(None,a,b).ratio() >= .60
+    return difflib.SequenceMatcher(None,a,b).ratio() >= .78
 def safe_float(x):
     try: return 0.0 if x in [None,""] else float(str(x).replace(",","."))
     except Exception: return 0.0
@@ -218,7 +218,9 @@ def load_rows(home,away):
         if err or not text: continue
         try: rows=list(csv.DictReader(io.StringIO(text)))
         except Exception: continue
-        if any(row_has_team(r,home) or row_has_team(r,away) for r in rows if r.get("HomeTeam")):
+        has_home = any(row_has_team(r,home) for r in rows if r.get("HomeTeam"))
+        has_away = any(row_has_team(r,away) for r in rows if r.get("HomeTeam"))
+        if has_home and has_away:
             return rows,url.split("/")[-1]
     return [],""
 def team_stats(rows, team):
