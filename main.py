@@ -517,7 +517,7 @@ def thesportsdb_rows(date_str):
     for x in events:
         home=(x.get("strHomeTeam") or "").strip(); away=(x.get("strAwayTeam") or "").strip()
         if home and away:
-            out.append({"id":"TSDB-"+str(len(out)+1).zfill(5),"date":(x.get("strTimestamp") or x.get("dateEvent") or ""), "home":home, "away":away, "source":"TheSportsDB"})
+            out.append({"id":"TSDB-"+str(len(out)+1).zfill(5),"date":(x.get("strTimestamp") or x.get("dateEvent") or ""), "home":home, "away":away, "source":"TheSportsDB","home_id":x.get("idHomeTeam"),"away_id":x.get("idAwayTeam")})
     return out,["TheSportsDB: OK "+str(len(out))]
 
 def fixture_feed_rows(date_str):
@@ -605,9 +605,23 @@ def api_team_history(team_name, last=10):
             out.append({"home":home,"away":away,"hg":safe_int(hg) or 0,"ag":safe_int(ag) or 0,"date":fx.get("date","")})
     return out
 
+def thesportsdb_history(team_id, last=10):
+    if not team_id: return []
+    data,err=http_json("https://www.thesportsdb.com/api/v1/json/3/eventslast.php?id="+str(team_id),timeout=10)
+    out=[]
+    for x in ((data or {}).get("results") or [] if isinstance(data,dict) else []):
+        hg=safe_int(x.get("intHomeScore")); ag=safe_int(x.get("intAwayScore"))
+        if x.get("strHomeTeam") and x.get("strAwayTeam") and hg is not None and ag is not None:
+            out.append({"home":x.get("strHomeTeam"),"away":x.get("strAwayTeam"),"hg":hg,"ag":ag,"date":x.get("dateEvent","")})
+    return out[:last]
+
 def select_history(row):
     home=api_team_history(row.get("home",""),10)
     away=api_team_history(row.get("away",""),10)
+    if len(home)<5 and row.get("home_id"):
+        home=thesportsdb_history(row.get("home_id"),10)
+    if len(away)<5 and row.get("away_id"):
+        away=thesportsdb_history(row.get("away_id"),10)
     return home,away
 
 def select_score(row):
