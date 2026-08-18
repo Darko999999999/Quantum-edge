@@ -585,11 +585,32 @@ def select_rows_for_date(date_str):
     return rows,sources
 
 def select_score(row):
-    # XS01-XS06 are shown explicitly; this first version uses only source completeness.
-    xs=[2,1,1,1,1,1]
+    # P11.2 FAST SCAN: prematch data only; no odds, lineups or exact-score output.
+    rows,src=load_rows(row.get("home",""),row.get("away",""))
+    if not rows:
+        return [0,0,0,0,0,0],0,"HOLD","F03"
+    h=team_stats(rows,row.get("home","")); a=team_stats(rows,row.get("away",""))
+    if not h or not a:
+        return [1,0,0,0,0,0],1,"HOLD","F03"
+    hg=[r for r in rows if match_team(r.get("HomeTeam",""),row.get("home","")) and safe_int(r.get("FTHG")) is not None][-10:]
+    ag=[r for r in rows if match_team(r.get("AwayTeam",""),row.get("away","")) and safe_int(r.get("FTHG")) is not None][-10:]
+    xs01=2 if len(hg)>=8 and len(ag)>=8 else 1 if len(hg)>=5 and len(ag)>=5 else 0
+    totals=[]
+    for r in (hg+ag):
+        totals.append((safe_int(r.get("FTHG")) or 0)+(safe_int(r.get("FTAG")) or 0))
+    low=sum(x<=3 for x in totals); high=sum(x>=4 for x in totals)
+    xs02=2 if totals and (low/len(totals)>=.7 or high/len(totals)>=.6) else 1 if totals else 0
+    gap=abs(h["form"]-a["form"])
+    xs03=2 if gap>=25 else 1 if gap>=10 else 0
+    underdog=min(h["form"],a["form"])
+    xs04=2 if underdog>=45 and (h["ga"]<2 or a["ga"]<2) else 1 if underdog>=35 else 0
+    favorite=max(h["form"],a["form"])
+    xs05=2 if favorite>=65 and max(h["gf"],a["gf"])>=1.2 else 1 if favorite>=50 else 0
+    xs06=2 if xs01==2 and (len(totals)>=12) else 1 if xs01>=1 else 0
+    xs=[xs01,xs02,xs03,xs04,xs05,xs06]
     total=sum(xs)
-    tier="A" if total>=11 else "B" if total>=8 else "C"
-    return xs,total,tier,"F06" if row.get("source") else "F03"
+    tier="A" if total>=11 and 0 not in (xs01,xs04,xs06) else "B" if total>=8 else "C" if total>=6 else "WATCH"
+    return xs,total,tier,"F06" if total>=6 else "F03"
 
 def select_page(rows=None,sources=None,scan_date=""):
     rows=rows or []; sources=sources or []
@@ -598,7 +619,7 @@ def select_page(rows=None,sources=None,scan_date=""):
         xs,total,tier,reason=select_score(r)
         scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
     scored.sort(key=lambda x:(-x["total"],x["date"],x["id"]))
-    master=scored[:4]
+    master=[r for r in scored if r["tier"]!="HOLD"][:4]
     body=""
     for r in scored:
         body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(r["date"])}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
