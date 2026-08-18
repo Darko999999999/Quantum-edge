@@ -504,9 +504,26 @@ def api_global_rows(date_str):
                         seen.add(key); out.append({"id":"SM-"+str(len(out)+1).zfill(5),"date":x.get("starting_at",""),"home":home,"away":away,"source":"Sportmonks"})
     return out,used
 
+def thesportsdb_rows(date_str):
+    try:
+        iso=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y-%m-%d") if "." in (date_str or "") else datetime.strptime(date_str,"%Y-%m-%d").strftime("%Y-%m-%d")
+    except Exception:
+        iso=date_str
+    data,err=http_json("https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d="+iso+"&s=Soccer",timeout=10)
+    if err:
+        return [],["TheSportsDB: ERROR "+err]
+    events=(data or {}).get("events") or [] if isinstance(data,dict) else []
+    out=[]
+    for x in events:
+        home=(x.get("strHomeTeam") or "").strip(); away=(x.get("strAwayTeam") or "").strip()
+        if home and away:
+            out.append({"id":"TSDB-"+str(len(out)+1).zfill(5),"date":(x.get("strTimestamp") or x.get("dateEvent") or ""), "home":home, "away":away, "source":"TheSportsDB"})
+    return out,["TheSportsDB: OK "+str(len(out))]
+
 def fixture_feed_rows(date_str):
     # Broad fixture feed for SELECT. It is independent of odds and exact-score markets.
     global_rows,global_sources=api_global_rows(date_str)
+    tsdb_rows,tsdb_sources=thesportsdb_rows(date_str)
     try:
         if "." in (date_str or ""):
             date_str=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y%m%d")
@@ -515,7 +532,7 @@ def fixture_feed_rows(date_str):
     except Exception:
         date_str=datetime.now().strftime("%Y%m%d")
     leagues=["eng.1","eng.2","esp.1","ita.1","ger.1","fra.1","ned.1","por.1","bel.1","sco.1","pol.1","bra.1","arg.1","mex.1","usa.1","uefa.champions","uefa.europa","conmebol.libertadores","conmebol.sudamericana"]
-    out=list(global_rows); seen={(r['home'].lower(),r['away'].lower(),str(r.get('date',''))[:16]) for r in out}; used=list(global_sources)
+    out=list(global_rows)+list(tsdb_rows); seen={(r['home'].lower(),r['away'].lower(),str(r.get('date',''))[:16]) for r in out}; used=list(global_sources)+list(tsdb_sources)
     for league in leagues:
         url=f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
         data,err=http_json(url,timeout=10)
