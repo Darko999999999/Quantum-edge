@@ -653,8 +653,7 @@ def select_score(row):
     xs=[xs01,xs02,xs03,xs04,xs05,xs06]
     total=sum(xs)
     tier="A" if total>=11 and 0 not in (xs01,xs04,xs06) else "B" if total>=8 else "C" if total>=6 else "WATCH"
-    profile="BAL-L" if total<=3 else "STR-C" if high/len(totals)>=0.6 else "CTL-H" if h["form"]>=a["form"]+12 else "CTL-A" if a["form"]>=h["form"]+12 else "BAL-L"
-    return xs,total,tier,"F06" if total>=6 else "F03",profile
+    profile="BAL-L"\n    if h["form"]>=a["form"]+12: profile="CTL-H"\n    elif a["form"]>=h["form"]+12: profile="CTL-A"\n    elif high>0 and len(totals)>0 and high/len(totals)>=0.6: profile="STR-C"
 def select_page(rows=None,sources=None,scan_date=""):
     rows=rows or []; sources=sources or []
     scored=[]
