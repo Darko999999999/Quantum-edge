@@ -518,9 +518,14 @@ def fixture_feed_rows(date_str):
     out=list(global_rows); seen={(r['home'].lower(),r['away'].lower(),str(r.get('date',''))[:16]) for r in out}; used=list(global_sources)
     for league in leagues:
         url=f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
-        data,err=http_json(url)
-        if err or not isinstance(data,dict): continue
-        used.append("ESPN:"+league)
+        data,err=http_json(url,timeout=10)
+        if err:
+            used.append("ESPN:"+league+": ERROR "+err)
+            continue
+        if not isinstance(data,dict):
+            used.append("ESPN:"+league+": INVALID")
+            continue
+        used.append("ESPN:"+league+": OK "+str(len(data.get("events",[]))))
         for ev in data.get("events",[]):
             comp=(ev.get("competitions") or [{}])[0]
             teams=comp.get("competitors") or []
