@@ -2,7 +2,10 @@
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 import sqlite3
 import os
 import urllib.request, urllib.parse, urllib.error, json, csv, io, difflib, re, html as html_lib, uuid
@@ -850,7 +853,7 @@ def select_scan(scan_date:str=Form("")):
     return RedirectResponse(url="/history", status_code=303)
 
 @app.post("/select/master", response_class=HTMLResponse)
-def select_master(run_id:str=Form(""),match_id:list[str]=Form([])):
+def select_master(run_id:str=Form(""),match_id:list=Form([])):
     run=_get_select_run(run_id)
     if not run:
         rows,sources,scan_date=scan_match_rows(datetime.now())
