@@ -717,6 +717,22 @@ def select_ranked(rows):
     master=[r for r in scored if r["tier"] in ("A","B")][:4]
     return scored,master
 
+def persist_selected_matches(rows):
+    if not rows:
+        return 0
+    con=sqlite3.connect(DB_PATH)
+    cur=con.cursor()
+    inserted=0
+    for row in rows:
+        v=fetch_stats(row.get("home",""),row.get("away",""))
+        r=model(v)
+        started = format_event_datetime(row.get("date")) or format_event_date(datetime.now())
+        cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)", (started,v["home_team"],v["away_team"],r["pick"],r["prob"],r["fair"],v["odds"],r["edge"],r["control"],r["rating"]))
+        inserted += 1
+    con.commit()
+    con.close()
+    return inserted
+
 def api_team_history(team_name, last=10):
     """Fetch prematch history from API-Football without exposing the API key."""
     key=os.getenv("API_FOOTBALL_KEY","").strip()
@@ -827,7 +843,11 @@ def select_scan(scan_date:str=Form("")):
     rows,sources,scan_date=scan_match_rows(scan_date)
     scored,master=select_ranked(rows)
     run_id=_remember_select_run(rows,sources,scan_date, (scored,master))
-    return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master))
+    top = scored[:4] if scored else []
+    if not top:
+        return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master),message="Brak kandydatów do automatycznego MASTERA.")
+    persist_selected_matches(top)
+    return RedirectResponse(url="/history", status_code=303)
 
 @app.post("/select/master", response_class=HTMLResponse)
 def select_master(run_id:str=Form(""),match_id:list[str]=Form([])):
@@ -844,15 +864,7 @@ def select_master(run_id:str=Form(""),match_id:list[str]=Form([])):
         chosen=[r for r in master if r.get("id")]
     if not chosen:
         return select_page(run["rows"],run["sources"],run["scan_date"],run_id=run_id,scored=(scored,master),message="MASTER QUEUE jest pusta — naciśnij SKANUJ MECZE.")
-    con=sqlite3.connect(DB_PATH)
-    cur=con.cursor()
-    for row in chosen:
-        v=fetch_stats(row.get("home",""),row.get("away",""))
-        r=model(v)
-        started = format_event_datetime(row.get("date")) or format_event_date(datetime.now())
-        cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)", (started,v["home_team"],v["away_team"],r["pick"],r["prob"],r["fair"],v["odds"],r["edge"],r["control"],r["rating"]))
-    con.commit()
-    con.close()
+    persist_selected_matches(chosen)
     return RedirectResponse(url="/history", status_code=303)
 
 @app.get("/history", response_class=HTMLResponse)
