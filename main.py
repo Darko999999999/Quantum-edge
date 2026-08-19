@@ -793,12 +793,13 @@ def select_page(rows=None,sources=None,scan_date="",run_id="",message="",scored=
     scan_date = date_query(scan_date, datetime.now())
     working_sources=[s for s in sources if "ERROR" not in s]
     failed_sources=[s for s in sources if "ERROR" in s]
-    if isinstance(scored, tuple):
+    if isinstance(scored, tuple) and len(scored)==2:
         scored,master = scored
     elif scored is None:
         scored,master = select_ranked(rows)
     else:
-        scored,master = scored
+        scored = scored
+        master=[r for r in scored if r["tier"] in ("A","B")][:4]
     body=""
     for r in scored:
         body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(format_event_datetime(r["date"]))}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
