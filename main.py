@@ -174,6 +174,78 @@ def safe_int(x):
     try: return None if x in [None,""] else int(float(str(x).replace(",",".")))
     except Exception: return None
 
+def parse_datetime_any(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    raw = str(value).strip()
+    if not raw:
+        return None
+    patterns = [
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%d.%m.%Y %H:%M",
+        "%d.%m.%Y",
+        "%Y%m%d",
+        "%Y/%m/%d",
+    ]
+    for p in patterns:
+        try:
+            dt = datetime.strptime(raw, p)
+            return dt.replace(tzinfo=None)
+        except Exception:
+            pass
+    try:
+        if raw.endswith("Z"):
+            dt = datetime.fromisoformat(raw[:-1] + "+00:00")
+        else:
+            dt = datetime.fromisoformat(raw)
+        if dt.tzinfo:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+def normalize_query_date(value, default=None):
+    default = default or datetime.now()
+    dt = parse_datetime_any(value)
+    return dt if dt else default
+
+def date_query(value, default=None):
+    return normalize_query_date(value, default).strftime("%Y-%m-%d")
+
+def date_query_compact(value, default=None):
+    return normalize_query_date(value, default).strftime("%Y%m%d")
+
+def format_event_date(value):
+    dt = parse_datetime_any(value)
+    if not dt:
+        return str(value or "")
+    return dt.strftime("%d.%m.%Y")
+
+def format_event_datetime(value):
+    dt = parse_datetime_any(value)
+    if not dt:
+        return str(value or "")
+    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0:
+        return dt.strftime("%d.%m.%Y")
+    return dt.strftime("%d.%m.%Y %H:%M")
+
+def fixture_sort_key(value):
+    dt = parse_datetime_any(value)
+    return dt or datetime.max
+
+def fixture_dedupe_key(home, away, dt_value):
+    dt = parse_datetime_any(dt_value)
+    ts = dt.strftime("%Y%m%d%H%M") if dt else str(dt_value or "")[:16]
+    return (str(home or "").strip().lower(), str(away or "").strip().lower(), ts)
+
 def http_text(url):
     if url in TEXT_CACHE: return TEXT_CACHE[url], None
     try:
@@ -426,11 +498,16 @@ def page(v=None,result=None,show_history=False):
     history_html="<div class='card'><h2>ANALYSIS HISTORY</h2><div class='hist'><div>DATE</div><div>MATCH</div><div>TIP</div><div>VALUE</div><div>EXACT</div><div>RESULT</div><div>CLV</div>"
     if rows:
         for r in rows:
-            history_html+=f"<div>{esc(r[0])}</div><div>{esc(r[1])} vs {esc(r[2])}</div><div>{esc(r[3])}</div><div class='g'>{r[5]}</div><div>{esc(r[6])}</div><div class='g'>OPEN</div><div class='g'>watch</div>"
+            history_html+=f"<div>{esc(format_event_date(r[0]))}</div><div>{esc(r[1])} vs {esc(r[2])}</div><div>{esc(r[3])}</div><div class='g'>{r[5]}</div><div>{esc(r[6])}</div><div class='g'>OPEN</div><div class='g'>watch</div>"
     else:
-        demo=[("23.05.2026","Arsenal vs Brighton","1","+8.7%","2:0","WIN","+4.1%"),("22.05.2026","Man Utd vs Chelsea","X2","+3.2%","1:1","WIN","+1.9%")]
+        today = datetime.now()
+        demo=[((today - timedelta(days=1)).strftime("%Y-%m-%d"),"Arsenal vs Brighton","1","+8.7%","2:0","WIN","+4.1%"),((today - timedelta(days=2)).strftime("%Y-%m-%d"),"Man Utd vs Chelsea","X2","+3.2%","1:1","WIN","+1.9%")]
         for d in demo:
-            for x in d: history_html+=f"<div>{x}</div>"
+            for idx,x in enumerate(d):
+                if idx == 0:
+                    history_html += f"<div>{format_event_date(x)}</div>"
+                else:
+                    history_html += f"<div>{x}</div>"
     history_html+="</div></div>"
     home=v["home_team"] or "Manchester City"; away=v["away_team"] or "West Ham United"
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge v30</title>{CSS}</head><body><div class='shell'>
@@ -438,7 +515,7 @@ def page(v=None,result=None,show_history=False):
 <div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>COUNTRY</label><select name='league'><option>All Countries</option><option>Premier League</option><option>Serie A</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ GET STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
 <div class='card'><h2>QUICK STATS</h2><div class='quick'><div>{crest(home)}<br>{esc(home)}</div><div>{crest(away)}<br>{esc(away)}</div></div><div class='mini'>WIN % <b>{v["form_home"]}</b> - <b>{v["form_away"]}</b></div><div class='mini'>AVG xG <b>{v["xg_home"]}</b> - <b>{v["xg_away"]}</b></div><div class='mini'>FORM <span class='g'>● ● ●</span> <span class='r'>● ●</span></div></div><p class='muted'>Quantum Edge v30</p></aside>
 <main class='center'><div class='top'><div class='status'>API STATUS <span></span>Odds API <span></span>Understat <span></span>Football-Data</div><div>LIVE CLOCK <span class='b'>{datetime.now().strftime("%H:%M:%S")}</span></div></div>
-<div class='card match'><div>{crest(home, True)}</div><div><small class='b'>PREMIER LEAGUE</small><h1>{esc(home)} vs {esc(away)}</h1><div class='muted'>📅 {datetime.now().strftime("%d.%m.%Y")} | 🏟 Stadium</div></div><div>{crest(away, True)}</div></div>
+<div class='card match'><div>{crest(home, True)}</div><div><small class='b'>PREMIER LEAGUE</small><h1>{esc(home)} vs {esc(away)}</h1><div class='muted'>📅 {format_event_date(datetime.now())} | 🏟 Stadium</div></div><div>{crest(away, True)}</div></div>
 <div class='card'><h2>FLOW ENGINE 2.0</h2><div class='flow'><div class='tile'><small>CONTROL FLOW</small><b class='g'>{f["control"]}</b></div><div class='tile'><small>CHAOS FLOW</small><b class='r'>{f["chaos"]}</b></div><div class='tile'><small>TRANSITION POWER</small><b class='p'>{f["transition"]}</b></div><div class='tile'><small>COLLAPSE RISK</small><b class='o'>{f["collapse"]}</b></div><div class='tile'><small>DRAW ACCEPTANCE</small><b class='b'>{f["draw"]}</b></div></div></div>
 <div class='card'><h2>EXACT SCORE ENGINE 2.0</h2><div class='score'><div><small>CONTROL SCENARIO</small><b class='g'>{c}</b></div><div><small>VALUE SCENARIO</small><b class='o'>{val}</b></div><div><small>CHAOS SCENARIO</small><b class='r'>{ch}</b></div></div></div>
 <div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>
@@ -465,10 +542,7 @@ SELECT_CSS = """
 
 
 def api_global_rows(date_str):
-    try:
-        iso=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y-%m-%d") if "." in (date_str or "") else datetime.strptime(date_str,"%Y-%m-%d").strftime("%Y-%m-%d")
-    except Exception:
-        iso=datetime.now().strftime("%Y-%m-%d")
+    iso = date_query(date_str, datetime.now())
     out=[]; used=[]; seen=set()
     af=os.getenv("API_FOOTBALL_KEY","").strip()
     if not af:
@@ -484,7 +558,7 @@ def api_global_rows(date_str):
                 fx=x.get("fixture",{}); teams=x.get("teams",{})
                 home=(teams.get("home") or {}).get("name",""); away=(teams.get("away") or {}).get("name","")
                 if home and away:
-                    key=(home.lower(),away.lower(),str(fx.get("date",""))[:16])
+                    key=fixture_dedupe_key(home,away,fx.get("date",""))
                     if key not in seen:
                         seen.add(key); out.append({"id":"AF-"+str(len(out)+1).zfill(5),"date":fx.get("date",""),"home":home,"away":away,"source":"API-Football"})
     sm=os.getenv("SPORTMONKS_TOKEN","").strip()
@@ -499,16 +573,13 @@ def api_global_rows(date_str):
                 parts=x.get("participants") or []
                 home=parts[0].get("name","") if parts else ""; away=parts[-1].get("name","") if len(parts)>1 else ""
                 if home and away:
-                    key=(home.lower(),away.lower(),str(x.get("starting_at",""))[:16])
+                    key=fixture_dedupe_key(home,away,x.get("starting_at",""))
                     if key not in seen:
                         seen.add(key); out.append({"id":"SM-"+str(len(out)+1).zfill(5),"date":x.get("starting_at",""),"home":home,"away":away,"source":"Sportmonks"})
     return out,used
 
 def thesportsdb_rows(date_str):
-    try:
-        iso=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y-%m-%d") if "." in (date_str or "") else datetime.strptime(date_str,"%Y-%m-%d").strftime("%Y-%m-%d")
-    except Exception:
-        iso=date_str
+    iso = date_query(date_str, datetime.now())
     data,err=http_json("https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d="+iso+"&s=Soccer",timeout=10)
     if err:
         return [],["TheSportsDB: ERROR "+err]
@@ -524,15 +595,11 @@ def fixture_feed_rows(date_str):
     # Broad fixture feed for SELECT. It is independent of odds and exact-score markets.
     global_rows,global_sources=api_global_rows(date_str)
     tsdb_rows,tsdb_sources=thesportsdb_rows(date_str)
-    try:
-        if "." in (date_str or ""):
-            date_str=datetime.strptime(date_str,"%d.%m.%Y").strftime("%Y%m%d")
-        else:
-            date_str=datetime.strptime(date_str,"%Y-%m-%d").strftime("%Y%m%d")
-    except Exception:
-        date_str=datetime.now().strftime("%Y%m%d")
+    date_str = date_query_compact(date_str, datetime.now())
     leagues=["eng.1","eng.2","esp.1","ita.1","ger.1","fra.1","ned.1","por.1","bel.1","sco.1","pol.1","bra.1","arg.1","mex.1","usa.1","uefa.champions","uefa.europa","conmebol.libertadores","conmebol.sudamericana"]
-    out=list(global_rows)+list(tsdb_rows); seen={(r['home'].lower(),r['away'].lower(),str(r.get('date',''))[:16]) for r in out}; used=list(global_sources)+list(tsdb_sources)
+    out=list(global_rows)+list(tsdb_rows)
+    seen={fixture_dedupe_key(r.get("home"),r.get("away"),r.get("date")) for r in out}
+    used=list(global_sources)+list(tsdb_sources)
     for league in leagues:
         url=f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
         data,err=http_json(url,timeout=10)
@@ -552,7 +619,7 @@ def fixture_feed_rows(date_str):
             status=((ev.get("status") or {}).get("type") or {}).get("name","")
             if status in {"STATUS_FINAL","STATUS_IN_PROGRESS","STATUS_FULL_TIME"}: continue
             start=ev.get("date","")
-            key=(home.lower(),away.lower(),start[:16])
+            key=fixture_dedupe_key(home,away,start)
             if key in seen: continue
             seen.add(key)
             out.append({"id":"ESPN-"+str(len(out)+1).zfill(5),"date":start,"home":home,"away":away,"source":"ESPN:"+league})
@@ -657,17 +724,18 @@ def select_score(row):
 
 def select_page(rows=None,sources=None,scan_date=""):
     rows=rows or []; sources=sources or []
+    scan_date = date_query(scan_date, datetime.now())
     working_sources=[s for s in sources if "ERROR" not in s]
     failed_sources=[s for s in sources if "ERROR" in s]
     scored=[]
     for r in rows:
         xs,total,tier,reason=select_score(r)
         scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
-    scored.sort(key=lambda x:(-x["total"],x["date"],x["id"]))
+    scored.sort(key=lambda x:(-x["total"],fixture_sort_key(x.get("date")),x["id"]))
     master=[r for r in scored if r["tier"] in ("A","B")][:4]
     body=""
     for r in scored:
-        body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(r["date"])}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
+        body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(format_event_datetime(r["date"]))}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
     if not body: body="<tr><td colspan='8' class='select-note'>Brak zweryfikowanych meczów w aktualnym źródle. Skan nie tworzy sztucznych kandydatów.</td></tr>"
     mbody="".join(f"<li>{esc(r['home'])} – {esc(r['away'])} · {r['total']} pkt · {r['tier']}</li>" for r in master)
     if not mbody: mbody="<li>MASTER Queue pusta</li>"
@@ -684,20 +752,17 @@ def home(): return select_page()
 @app.post("/select/scan", response_class=HTMLResponse)
 def select_scan(scan_date:str=Form("")):
     # P11.2 Daily Universe: D-1 / D / D+1, union and deterministic deduplication.
-    try:
-        center=datetime.strptime(scan_date,"%d.%m.%Y") if "." in (scan_date or "") else datetime.strptime(scan_date,"%Y-%m-%d")
-    except Exception:
-        center=datetime.now()
+    center=normalize_query_date(scan_date, datetime.now())
     all_rows=[]; all_sources=[]; seen=set()
     for delta in (-1,0,1):
         day=(center+timedelta(days=delta)).strftime("%Y-%m-%d")
         day_rows,day_sources=select_rows_for_date(day)
         all_sources.extend(day_sources)
         for row in day_rows:
-            key=(row.get("home","").strip().lower(),row.get("away","").strip().lower(),str(row.get("date",""))[:16])
+            key=fixture_dedupe_key(row.get("home"),row.get("away"),row.get("date"))
             if key not in seen:
                 seen.add(key); all_rows.append(row)
-    return select_page(all_rows,sorted(set(all_sources)),scan_date)
+    return select_page(all_rows,sorted(set(all_sources)),date_query(center, datetime.now()))
 
 @app.post("/select/master", response_class=HTMLResponse)
 def select_master(match_id:list[str]=Form([])):
@@ -720,6 +785,6 @@ def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league
 def analyze(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
     v=form_values(**locals()); r=model(v)
     con=sqlite3.connect(DB_PATH); cur=con.cursor()
-    cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime("%d.%m.%Y"),home_team,away_team,r["pick"],r["prob"],r["fair"],odds,r["edge"],r["control"],r["rating"]))
+    cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)",(format_event_date(datetime.now()),home_team,away_team,r["pick"],r["prob"],r["fair"],odds,r["edge"],r["control"],r["rating"]))
     con.commit(); con.close()
     return page(v,r)
