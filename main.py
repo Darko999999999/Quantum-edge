@@ -1,10 +1,11 @@
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import sqlite3
 import os
-import urllib.request, urllib.parse, urllib.error, json, csv, io, difflib, re, html as html_lib
+import urllib.request, urllib.parse, urllib.error, json, csv, io, difflib, re, html as html_lib, uuid
 
 app = FastAPI(title="Quantum Edge v30")
 DB_PATH = "quantum_edge.db"
@@ -148,6 +149,39 @@ LOGO_DOMAINS = {
 
 TEXT_CACHE = {}
 JSON_CACHE = {}
+SELECT_SCAN_CACHE = {}
+SELECT_SCAN_CACHE_LIMIT = 12
+try:
+    WARSZAWA_TZ = ZoneInfo("Europe/Warsaw")
+except Exception:
+    WARSZAWA_TZ = None
+
+def _to_warsaw_naive(dt):
+    if dt is None:
+        return None
+    if dt.tzinfo and WARSZAWA_TZ:
+        try:
+            return dt.astimezone(WARSZAWA_TZ).replace(tzinfo=None)
+        except Exception:
+            pass
+    return dt.replace(tzinfo=None)
+
+def _remember_select_run(rows, sources, scan_date, scored, run_id=None):
+    run_id = run_id or str(uuid.uuid4())
+    SELECT_SCAN_CACHE[run_id] = {
+        "rows": rows,
+        "sources": sources,
+        "scan_date": scan_date,
+        "scored": scored,
+        "created": datetime.now().timestamp()
+    }
+    if len(SELECT_SCAN_CACHE) > SELECT_SCAN_CACHE_LIMIT:
+        for old in sorted(SELECT_SCAN_CACHE, key=lambda k: SELECT_SCAN_CACHE[k]["created"])[:len(SELECT_SCAN_CACHE)-SELECT_SCAN_CACHE_LIMIT]:
+            SELECT_SCAN_CACHE.pop(old, None)
+    return run_id
+
+def _get_select_run(run_id):
+    return SELECT_SCAN_CACHE.get(run_id or "")
 
 def init_db():
     con = sqlite3.connect(DB_PATH)
@@ -178,7 +212,7 @@ def parse_datetime_any(value):
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
+        return _to_warsaw_naive(value)
     raw = str(value).strip()
     if not raw:
         return None
@@ -198,7 +232,7 @@ def parse_datetime_any(value):
     for p in patterns:
         try:
             dt = datetime.strptime(raw, p)
-            return dt.replace(tzinfo=None)
+            return _to_warsaw_naive(dt)
         except Exception:
             pass
     try:
@@ -206,9 +240,7 @@ def parse_datetime_any(value):
             dt = datetime.fromisoformat(raw[:-1] + "+00:00")
         else:
             dt = datetime.fromisoformat(raw)
-        if dt.tzinfo:
-            dt = dt.astimezone().replace(tzinfo=None)
-        return dt
+        return _to_warsaw_naive(dt)
     except Exception:
         return None
 
@@ -295,6 +327,18 @@ def load_rows(home,away):
         except Exception: continue
         has_home = any(row_has_team(r,home) for r in rows if r.get("HomeTeam"))
         has_away = any(row_has_team(r,away) for r in rows if r.get("HomeTeam"))
+        if home and away:
+            if has_home and has_away:
+                return rows,url.split("/")[-1]
+            continue
+        if home and not away:
+            if has_home:
+                return rows,url.split("/")[-1]
+            continue
+        if away and not home:
+            if has_away:
+                return rows,url.split("/")[-1]
+            continue
         if has_home and has_away:
             return rows,url.split("/")[-1]
     return [],""
@@ -651,6 +695,28 @@ def select_rows_for_date(date_str):
                 rows.append({"id":"FD-"+str(len(rows)+1).zfill(5),"date":r.get("Date",""),"home":home,"away":away,"source":url.split("/")[-1]})
     return rows,sources
 
+def scan_match_rows(scan_date):
+    center=normalize_query_date(scan_date, datetime.now())
+    all_rows=[]; all_sources=[]; seen=set()
+    for delta in (-1,0,1):
+        day=(center+timedelta(days=delta)).strftime("%Y-%m-%d")
+        day_rows,day_sources=select_rows_for_date(day)
+        all_sources.extend(day_sources)
+        for row in day_rows:
+            key=fixture_dedupe_key(row.get("home"),row.get("away"),row.get("date"))
+            if key not in seen:
+                seen.add(key); all_rows.append(row)
+    return all_rows, sorted(set(all_sources)), date_query(center, datetime.now())
+
+def select_ranked(rows):
+    scored=[]
+    for r in rows:
+        xs,total,tier,reason=select_score(r)
+        scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
+    scored.sort(key=lambda x:(-x["total"],fixture_sort_key(x.get("date")),x["id"]))
+    master=[r for r in scored if r["tier"] in ("A","B")][:4]
+    return scored,master
+
 def api_team_history(team_name, last=10):
     """Fetch prematch history from API-Football without exposing the API key."""
     key=os.getenv("API_FOOTBALL_KEY","").strip()
@@ -722,51 +788,71 @@ def select_score(row):
     tier="A" if total>=11 and 0 not in (xs01,xs04,xs06) else "B" if total>=8 else "C" if total>=6 else "WATCH"
     return xs,total,tier,"F06" if total>=6 else "F03"
 
-def select_page(rows=None,sources=None,scan_date=""):
+def select_page(rows=None,sources=None,scan_date="",run_id="",message="",scored=None):
     rows=rows or []; sources=sources or []
     scan_date = date_query(scan_date, datetime.now())
     working_sources=[s for s in sources if "ERROR" not in s]
     failed_sources=[s for s in sources if "ERROR" in s]
-    scored=[]
-    for r in rows:
-        xs,total,tier,reason=select_score(r)
-        scored.append({**r,"xs":xs,"total":total,"tier":tier,"reason":reason,"profile":"CTL-H"})
-    scored.sort(key=lambda x:(-x["total"],fixture_sort_key(x.get("date")),x["id"]))
-    master=[r for r in scored if r["tier"] in ("A","B")][:4]
+    if isinstance(scored, tuple):
+        scored,master = scored
+    elif scored is None:
+        scored,master = select_ranked(rows)
+    else:
+        scored,master = scored
     body=""
     for r in scored:
         body+=f"""<tr><td><input class='select-check' type='checkbox' name='match_id' value='{esc(r["id"])}'></td><td>{esc(r["id"])}</td><td>{esc(r["home"])} – {esc(r["away"])}</td><td>{esc(format_event_datetime(r["date"]))}</td><td>{esc(r["profile"])}</td><td>{"/".join(map(str,r["xs"]))}</td><td><span class='select-pill tier-{r["tier"].lower()}'>{r["tier"]} · {r["total"]}</span></td><td>{esc(r["reason"])}</td></tr>"""
     if not body: body="<tr><td colspan='8' class='select-note'>Brak zweryfikowanych meczów w aktualnym źródle. Skan nie tworzy sztucznych kandydatów.</td></tr>"
     mbody="".join(f"<li>{esc(r['home'])} – {esc(r['away'])} · {r['total']} pkt · {r['tier']}</li>" for r in master)
     if not mbody: mbody="<li>MASTER Queue pusta</li>"
+    alert = f"<section class='select-card'><p class='select-note'>{esc(message)}</p></section>" if message else ""
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge SELECT</title><style>{SELECT_CSS}</style></head><body><main class='select-app'><div class='select-wrap'>
 <header class='select-head'><div><div class='select-brand'>⚡ QUANTUM <span>EDGE</span> SELECT</div><div class='select-sub'>P11.2 · NO ODDS · NO FINAL EXACT · pełny skan kandydatów</div></div><div class='select-actions'><form id='scan-form' method='post' action='/select/scan'><input type='date' name='scan_date' value='{esc(scan_date)}'><button id='scan-btn' class='select-btn'>SKANUJ MECZE</button><div id='scan-progress' class='scan-progress'><div class='scan-label'>Pobieram terminarze i sprawdzam źródła…</div><div class='scan-track'><div id='scan-fill' class='scan-fill'></div></div></div></form><script>document.getElementById('scan-form').addEventListener('submit',function(){{var b=document.getElementById('scan-btn'),p=document.getElementById('scan-progress'),f=document.getElementById('scan-fill');b.disabled=true;b.textContent='SKANOWANIE…';p.classList.add('active');var n=8;setInterval(function(){{if(n<92){{n+=7;f.style.width=n+'%'}}}},700)}})</script></div></header>
+{alert}
 <section class='select-card'><div class='select-grid'><div class='select-metric'><small>ŹRÓDŁA</small><b>{len(sources)}</b></div><div class='select-metric'><small>CANDIDATE POOL</small><b>{len(scored)}</b></div><div class='select-metric'><small>SHOWN</small><b>{len(scored)}</b></div><div class='select-metric'><small>MASTER QUEUE</small><b>{min(4,len(master))}</b></div></div><p class='select-note'>Coverage: {esc(", ".join(working_sources) or "brak działającego źródła")} · Niedostępne źródła: {len(failed_sources)} · SELECT nie używa kursów, składów ani exact score.</p></section>
-<section class='select-card'><h2>SHORTLIST SELECT</h2><form method='post' action='/select/master'><div style='overflow-x:auto'><table class='select-table'><thead><tr><th></th><th>MATCH ID</th><th>MECZ</th><th>START</th><th>PROFIL</th><th>XS01–06</th><th>TIER / XS</th><th>REASON</th></tr></thead><tbody>{body}</tbody></table></div><div class='select-actions' style='margin-top:14px'><button class='select-btn master'>PRZEKAŻ ZAZNACZONE DO MASTER</button></div></form></section>
+<section class='select-card'><h2>SHORTLIST SELECT</h2><form method='post' action='/select/master'><input type='hidden' name='run_id' value='{esc(run_id)}'><div style='overflow-x:auto'><table class='select-table'><thead><tr><th></th><th>MATCH ID</th><th>MECZ</th><th>START</th><th>PROFIL</th><th>XS01–06</th><th>TIER / XS</th><th>REASON</th></tr></thead><tbody>{body}</tbody></table></div><div class='select-actions' style='margin-top:14px'><button class='select-btn master'>PRZEKAŻ ZAZNACZONE DO MASTER</button></div></form></section>
 <section class='select-card'><h2>MASTER QUEUE · MAKS. 4</h2><ol>{mbody}</ol><p class='select-note'>To jest kolejka przekazania do MASTER. SELECT nie podaje wyniku exact score.</p></section>
 </div></main></body></html>"""
 
 @app.get("/", response_class=HTMLResponse)
-def home(): return select_page()
+def home():
+    rows,sources,scan_date=scan_match_rows(datetime.now())
+    scored,master=select_ranked(rows)
+    run_id=_remember_select_run(rows,sources,scan_date, (scored,master))
+    return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master))
 
 @app.post("/select/scan", response_class=HTMLResponse)
 def select_scan(scan_date:str=Form("")):
-    # P11.2 Daily Universe: D-1 / D / D+1, union and deterministic deduplication.
-    center=normalize_query_date(scan_date, datetime.now())
-    all_rows=[]; all_sources=[]; seen=set()
-    for delta in (-1,0,1):
-        day=(center+timedelta(days=delta)).strftime("%Y-%m-%d")
-        day_rows,day_sources=select_rows_for_date(day)
-        all_sources.extend(day_sources)
-        for row in day_rows:
-            key=fixture_dedupe_key(row.get("home"),row.get("away"),row.get("date"))
-            if key not in seen:
-                seen.add(key); all_rows.append(row)
-    return select_page(all_rows,sorted(set(all_sources)),date_query(center, datetime.now()))
+    rows,sources,scan_date=scan_match_rows(scan_date)
+    scored,master=select_ranked(rows)
+    run_id=_remember_select_run(rows,sources,scan_date, (scored,master))
+    return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master))
 
 @app.post("/select/master", response_class=HTMLResponse)
-def select_master(match_id:list[str]=Form([])):
-    return select_page()
+def select_master(run_id:str=Form(""),match_id:list[str]=Form([])):
+    run=_get_select_run(run_id)
+    if not run:
+        rows,sources,scan_date=scan_match_rows(datetime.now())
+        scored,master=select_ranked(rows)
+        run_id=_remember_select_run(rows,sources,scan_date,(scored,master))
+        return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master),message="Brak sesji skanu — wygenerowałem nową listę.")
+    scored,master=run.get("scored", ([],[]))
+    by_id={r.get("id"):r for r in scored}
+    chosen=[by_id.get(x) for x in match_id if by_id.get(x)]
+    if not chosen:
+        chosen=[r for r in master if r.get("id")]
+    if not chosen:
+        return select_page(run["rows"],run["sources"],run["scan_date"],run_id=run_id,scored=(scored,master),message="MASTER QUEUE jest pusta — naciśnij SKANUJ MECZE.")
+    con=sqlite3.connect(DB_PATH)
+    cur=con.cursor()
+    for row in chosen:
+        v=fetch_stats(row.get("home",""),row.get("away",""))
+        r=model(v)
+        started = format_event_datetime(row.get("date")) or format_event_date(datetime.now())
+        cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)", (started,v["home_team"],v["away_team"],r["pick"],r["prob"],r["fair"],v["odds"],r["edge"],r["control"],r["rating"]))
+    con.commit()
+    con.close()
+    return RedirectResponse(url="/history", status_code=303)
 
 @app.get("/history", response_class=HTMLResponse)
 def history(): return page(default_values(),show_history=True)
