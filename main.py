@@ -1,18 +1,28 @@
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
-from datetime import datetime, timedelta
+from fastapi.responses import HTMLResponse, JSONResponse
+from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
 import sqlite3
 import os
-import urllib.request, urllib.parse, urllib.error, json, csv, io, difflib, re, html as html_lib, uuid
+import urllib.parse, csv, io, difflib, uuid
+
+from qe_pipeline import PipelineRepository, PipelineRunner
+from qe_sources import (
+    SOURCE_FAILED,
+    SOURCE_INVALID,
+    SOURCE_NOT_CONFIGURED,
+    SOURCE_SUCCESS,
+    HttpClient,
+    collect_dap_for_fixture,
+    scan_fixtures,
+)
 
 app = FastAPI(title="Quantum Edge v30")
-DB_PATH = "quantum_edge.db"
-ODDS_API_KEY = "4235b3c48084bdd173789f88b6ddadfd"
+DB_PATH = os.getenv("QE_DB_PATH", "quantum_edge.db")
 
 FOOTBALL_DATA_URLS = [
     "https://www.football-data.co.uk/mmz4281/2526/E0.csv",
@@ -27,8 +37,6 @@ FOOTBALL_DATA_URLS = [
     "https://www.football-data.co.uk/mmz4281/2526/B1.csv",
     "https://www.football-data.co.uk/mmz4281/2526/T1.csv",
 ]
-UNDERSTAT_LEAGUES = ["EPL", "La_liga", "Serie_A", "Bundesliga", "Ligue_1"]
-SPORT_KEYS = ["soccer_epl","soccer_spain_la_liga","soccer_italy_serie_a","soccer_germany_bundesliga","soccer_france_ligue_one","soccer_netherlands_eredivisie","soccer_portugal_primeira_liga","soccer_belgium_first_div","soccer_turkey_super_league","soccer_scotland_premiership","soccer_poland_ekstraklasa","soccer_uefa_champs_league","soccer_uefa_europa_league","soccer_uefa_europa_conference_league"]
 
 ALIASES = {
 "real madryt":"Real Madrid","real madrid":"Real Madrid","real":"Real Madrid","athletic bilbao":"Athletic Club","atletico bilbao":"Athletic Club","athletic club":"Athletic Club","atletico madryt":"Atletico Madrid","atletico madrid":"Atletico Madrid",
@@ -150,10 +158,9 @@ LOGO_DOMAINS = {
 "dynamo kyiv":"fcdynamo.com"
 }
 
-TEXT_CACHE = {}
-JSON_CACHE = {}
 SELECT_SCAN_CACHE = {}
 SELECT_SCAN_CACHE_LIMIT = 12
+SOURCE_HTTP_CLIENT = HttpClient(default_timeout=12, ttl_seconds=300)
 try:
     WARSZAWA_TZ = ZoneInfo("Europe/Warsaw")
 except Exception:
@@ -282,27 +289,11 @@ def fixture_dedupe_key(home, away, dt_value):
     return (str(home or "").strip().lower(), str(away or "").strip().lower(), ts)
 
 def http_text(url):
-    if url in TEXT_CACHE: return TEXT_CACHE[url], None
-    try:
-        req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"*/*"})
-        with urllib.request.urlopen(req, timeout=3) as r:
-            text=r.read().decode("utf-8",errors="ignore")
-            TEXT_CACHE[url]=text
-            return text,None
-    except Exception as e:
-        return "",str(e)
+    text,error,_elapsed=SOURCE_HTTP_CLIENT.get_text(url,headers={"Accept":"*/*"},timeout=8,ttl=3600)
+    return text,error
 def http_json(url, headers=None, timeout=3):
-    if url in JSON_CACHE: return JSON_CACHE[url], None
-    try:
-        req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json",**(headers or {})})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data=json.loads(r.read().decode("utf-8",errors="ignore"))
-            JSON_CACHE[url]=data
-            return data,None
-    except urllib.error.HTTPError as e:
-        return None,f"HTTP {e.code}"
-    except Exception as e:
-        return None,str(e)
+    data,error,_elapsed=SOURCE_HTTP_CLIENT.get_json(url,headers=headers,timeout=timeout,ttl=300)
+    return data,error
 
 def crest(team, big=False):
     team = normalize_team_name(team or "")
@@ -315,7 +306,7 @@ def crest(team, big=False):
     return f"<span class='{cls} fake'>{esc(initials)}</span>"
 
 def default_values():
-    return {"home_team":"","away_team":"","city":"","league":"Premier League","xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"xg_source":"brak","form_home":0,"form_away":0,"tempo":0,"odds":1.75,"odds_1":0,"odds_x":0,"odds_2":0,"odds_source":"brak","shots_home":0,"shots_away":0,"sot_home":0,"sot_away":0,"corners_home":0,"corners_away":0,"cards_home":0,"cards_away":0,"home_home_matches":"","home_away_matches":"","away_home_matches":"","away_away_matches":"","message":"","sources":"","bookmaker":"Rynek"}
+    return {"home_team":"","away_team":"","city":"","league":"Premier League","match_date":date_query(datetime.now()),"xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"xg_source":"brak","form_home":0,"form_away":0,"tempo":0,"odds":0,"odds_1":0,"odds_x":0,"odds_2":0,"odds_source":"DISABLED_FOR_DECISION","shots_home":0,"shots_away":0,"sot_home":0,"sot_away":0,"corners_home":0,"corners_away":0,"cards_home":0,"cards_away":0,"home_home_matches":"","home_away_matches":"","away_home_matches":"","away_away_matches":"","message":"","sources":"","bookmaker":"Rynek"}
 
 def row_has_team(row, team): return match_team(row.get("HomeTeam",""), team) or match_team(row.get("AwayTeam",""), team)
 def side(row, team):
@@ -358,82 +349,12 @@ def team_stats(rows, team):
         gf+=own; ga+=opp; pts+=3 if own>opp else 1 if own==opp else 0
     n=len(games)
     return {"form":round(pts/(n*3)*100,1),"shots":round(shots/n,1),"sot":round(sot/n,1),"corners":round(corners/n,1),"cards":round(cards/n,1),"gf":round(gf/n,2),"ga":round(ga/n,2)}
-def split_matches(rows, team):
-    hh,aa=[],[]
-    for r in rows:
-        if safe_int(r.get("FTHG")) is None: continue
-        ht,at=r.get("HomeTeam",""),r.get("AwayTeam",""); hg=safe_int(r.get("FTHG")) or 0; ag=safe_int(r.get("FTAG")) or 0
-        txt=f"{ht} {hg}:{ag} {at}"
-        if match_team(ht,team): hh.append(txt)
-        elif match_team(at,team): aa.append(txt)
-    return " | ".join(hh[-5:]), " | ".join(aa[-5:])
-
-def parse_understat(text):
-    m=re.search(r"teamsData\s*=\s*JSON\.parse\('(.+?)'\)", text, flags=re.S)
-    if not m: return None
-    try: return json.loads(html_lib.unescape(m.group(1).encode("utf-8").decode("unicode_escape")))
-    except Exception: return None
-def find_understat(data, team):
-    best=None; bs=0; q=normalize_team_name(team)
-    for _,t in data.items():
-        title=t.get("title","")
-        sc=1 if norm(title)==norm(q) else .92 if norm(q) in norm(title) or norm(title) in norm(q) else difflib.SequenceMatcher(None,norm(title),norm(q)).ratio()
-        if sc>bs: best=t; bs=sc
-    return best if bs>=.58 else None
-def avg_understat(t):
-    hist=t.get("history",[])[-5:]
-    if not hist: return None
-    sx=sa=n=0
-    for i in hist:
-        x=safe_float(i.get("xG")); a=safe_float(i.get("xGA"))
-        if x==0 and a==0: continue
-        sx+=x; sa+=a; n+=1
-    if not n: return None
-    return round(sx/n,2), round(sa/n,2)
-def understat_xg(home,away):
-    out={"xg_home":0,"xg_away":0,"xga_home":0,"xga_away":0,"source":"Understat: brak xG"}
-    for lg in UNDERSTAT_LEAGUES:
-        text,err=http_text("https://understat.com/league/"+lg)
-        if err or not text: continue
-        data=parse_understat(text)
-        if not data: continue
-        ho=find_understat(data,home); aw=find_understat(data,away); found=False; src=["Understat "+lg]
-        if ho:
-            v=avg_understat(ho)
-            if v: out["xg_home"],out["xga_home"]=v; src.append("home: "+ho.get("title","")); found=True
-        if aw:
-            v=avg_understat(aw)
-            if v: out["xg_away"],out["xga_away"]=v; src.append("away: "+aw.get("title","")); found=True
-        if found:
-            out["source"]=" | ".join(src); return out
-    return out
-
-def fetch_stats(home_team,away_team,city=""):
-    v=default_values(); home=normalize_team_name(home_team); away=normalize_team_name(away_team)
-    v["home_team"]=home; v["away_team"]=away; v["city"]=city
-    rows,src=load_rows(home,away)
-    if not rows:
-        v["message"]="Brak danych Football-Data."; v["sources"]="Football-Data: brak"; return v
-    h=team_stats(rows,home); a=team_stats(rows,away)
-    if h:
-        v["form_home"],v["shots_home"],v["sot_home"],v["corners_home"],v["cards_home"]=h["form"],h["shots"],h["sot"],h["corners"],h["cards"]
-    if a:
-        v["form_away"],v["shots_away"],v["sot_away"],v["corners_away"],v["cards_away"]=a["form"],a["shots"],a["sot"],a["corners"],a["cards"]
-    ux=understat_xg(home,away)
-    v["xg_home"],v["xg_away"],v["xga_home"],v["xga_away"],v["xg_source"]=ux["xg_home"],ux["xg_away"],ux["xga_home"],ux["xga_away"],ux["source"]
-    v["home_home_matches"],v["home_away_matches"]=split_matches(rows,home)
-    v["away_home_matches"],v["away_away_matches"]=split_matches(rows,away)
-    ts=v["shots_home"]+v["shots_away"]; tc=v["sot_home"]+v["sot_away"]
-    v["tempo"]=62 if ts>=25 or tc>=9 else 43 if ts>0 else 0
-    v["message"]="Dane pobrane."; v["sources"]="Football-Data "+src+" | "+v["xg_source"]
-    return v
-
 def fetch_odds(home_team,away_team,bookmaker):
     v=default_values(); home=normalize_team_name(home_team); away=normalize_team_name(away_team)
     v["home_team"]=home; v["away_team"]=away
-    # fast no-fail fallback, API może być wolne — nie blokuje wyglądu
-    v["odds_1"],v["odds_x"],v["odds_2"],v["odds"]=1.55,5.20,8.40,1.55
-    v["odds_source"]="Market / fallback"; v["message"]="Kursy ustawione jako fallback rynkowy."; v["sources"]="Market fallback"
+    v["odds_source"]="DISABLED_FOR_DECISION"
+    v["message"]="Brak zweryfikowanego źródła kursów — nie podstawiono wartości zastępczych."
+    v["sources"]="Rynek: NOT_CONFIGURED"
     return v
 
 def merge(base,upd,keys):
@@ -441,13 +362,7 @@ def merge(base,upd,keys):
     for k in keys:
         if k in upd: r[k]=upd[k]
     return r
-STAT_KEYS=["home_team","away_team","city","xg_home","xg_away","xga_home","xga_away","xg_source","form_home","form_away","tempo","shots_home","shots_away","sot_home","sot_away","corners_home","corners_away","cards_home","cards_away","message","sources","home_home_matches","home_away_matches","away_home_matches","away_away_matches"]
 ODDS_KEYS=["home_team","away_team","odds","odds_1","odds_x","odds_2","odds_source","message","sources"]
-def form_values(**kw):
-    v=default_values()
-    for k,val in kw.items():
-        if k in v: v[k]=val
-    return v
 def clamp(x):
     try: x=float(x)
     except Exception: x=0
@@ -481,6 +396,78 @@ def exact(v,f):
     return "1:1","2:1","2:2"
 def model(v):
     f=flow(v); p=round(max(1,min(95,35+((v["form_home"]+v["form_away"])/2)*.22+(100-f["chaos"])*.22)),1); e=edge(p,v["odds"]); rating="TOP VALUE" if e>5 and p>=60 else "LEKKIE VALUE" if e>0 and p>=57 else "BRAK VALUE"; c,val,ch=exact(v,f); return {"pick":"1X" if v["form_home"]>=v["form_away"] else "X2","prob":p,"fair":fair(p),"edge":e,"rating":rating,"control":c,"value":val,"chaos":ch}
+
+
+def run_legacy_engine_from_contract(contract, progress_callback):
+    """Run the existing v30 calculation only from DAP's immutable facts."""
+    progress_callback("ENGINE.LEGACY", 25, "RUNNING", "Wczytano zamrożony pakiet DAP")
+    engine_input = ((contract.get("immutable_facts_package") or {}).get("engine_input") or {})
+    values = default_values()
+    for key, value in engine_input.items():
+        if key in values:
+            values[key] = value
+    # External prices do not decide the exact-score output.  No fake fallback
+    # odds are allowed into the engine input.
+    values["odds"] = 0
+    values["odds_1"] = values["odds_x"] = values["odds_2"] = 0
+    result = model(values)
+    result["bookmaker_odds"] = 0
+    result["edge"] = 0
+    result["rating"] = "LEGACY v30 · BRAK DANYCH RYNKOWYCH"
+    progress_callback("ENGINE.LEGACY", 100, "COMPLETED", "Istniejący model v30 zakończony")
+    return result
+
+
+def collect_dap_for_app(fixture, progress_callback):
+    return collect_dap_for_fixture(
+        fixture,
+        progress_callback,
+        client=SOURCE_HTTP_CLIENT,
+    )
+
+
+PIPELINE_REPOSITORY = PipelineRepository(DB_PATH)
+PIPELINE_RUNNER = PipelineRunner(
+    PIPELINE_REPOSITORY,
+    collect_dap_for_app,
+    run_legacy_engine_from_contract,
+)
+
+LEAGUE_CODE_BY_LABEL = {
+    "Premier League": "eng.1",
+    "English Premier League": "eng.1",
+    "Championship": "eng.2",
+    "La Liga": "esp.1",
+    "Serie A": "ita.1",
+    "Bundesliga": "ger.1",
+    "Ligue 1": "fra.1",
+    "Eredivisie": "ned.1",
+    "Primeira Liga": "por.1",
+    "Ekstraklasa": "pol.1",
+}
+
+
+def resolve_fixture_for_analysis(home_team, away_team, match_date, league):
+    """Create an auditable identity request; DAP performs live resolution."""
+    scan_date = date_query(match_date, datetime.now())
+    league_code = LEAGUE_CODE_BY_LABEL.get(league, "eng.1" if "premier" in str(league).lower() else None)
+    # Browser-provided stats are never copied here. If the named match cannot
+    # be confirmed by DAP adapters, the sparse identity remains incomplete and
+    # the critical gate closes with FAIL/STOP.
+    return {
+        "home": normalize_team_name(home_team),
+        "away": normalize_team_name(away_team),
+        "kickoff": scan_date,
+        "date": scan_date,
+        "competition": league if league not in ("", "All Countries") else None,
+        "phase": None,
+        "league_code": league_code,
+        "status": None,
+        "venue_name": None,
+        "neutral": None,
+        "source": "FORM_IDENTITY_REQUEST",
+        "_source_results": [],
+    }
 
 CSS = """
 <style>
@@ -538,37 +525,81 @@ def leagues_panel():
     html += "</div></div></aside>"
     return html
 
-def page(v=None,result=None,show_history=False):
-    v=v or default_values(); res=result or (model(v) if v["home_team"] or v["away_team"] else None); f=flow(v); q,qs=quality(v); c,val,ch=exact(v,f)
-    if res: c,val,ch=res["control"],res["value"],res["chaos"]
+def dap_panel(run=None):
+    if not run:
+        return "<div class='card'><h2>DAP OUTPUT CONTRACT</h2><p class='muted'>DAP nie został uruchomiony. Silniki i zapis wyniku są niedostępne.</p></div>"
+    contract = run.get("dap_contract") or {}
+    status = contract.get("status_dap") or "—"
+    handover = contract.get("handover_status") or "—"
+    metrics = "DC {dc} · SC {sc} · DF {df} · DI {di} · FDC {fdc}".format(
+        dc=contract.get("dc", "—"), sc=contract.get("sc", "—"),
+        df=contract.get("df", "—"), di=contract.get("di", "—"),
+        fdc=contract.get("fdc", "—"),
+    )
+    critical = [item for item in contract.get("dap_items") or [] if item.get("classification") == "CRITICAL"]
+    critical_html = "".join(
+        "<div class='mini'><b>{}</b> · {} · {}</div>".format(
+            esc(item.get("id")),
+            "OK" if item.get("available") else "BRAK",
+            esc(item.get("conflict") or "NONE"),
+        )
+        for item in critical
+    ) or "<div class='mini'>Brak zamkniętego zestawu krytycznego.</div>"
+    sources = contract.get("source_register") or []
+    source_html = " · ".join(
+        "{}: {} ({})".format(
+            esc(source.get("source") or "źródło"),
+            esc(source.get("status") or "UNKNOWN"),
+            esc(source.get("records", 0)),
+        )
+        for source in sources
+    ) or "brak"
+    return """<div class='card'><h2>DAP OUTPUT CONTRACT</h2>
+    <p><b>RUN:</b> {run_id} · <b>STATE:</b> {state}</p>
+    <p><b>DAP:</b> {status} · <b>HANDOVER:</b> {handover}</p>
+    <p class='muted'>{metrics}</p>{critical}
+    <p class='muted'><b>Źródła:</b> {sources}</p></div>""".format(
+        run_id=esc(run.get("run_id") or "—"), state=esc(run.get("state") or "—"),
+        status=esc(status), handover=esc(handover), metrics=esc(metrics),
+        critical=critical_html, sources=source_html,
+    )
+
+
+def page(v=None,result=None,show_history=False,dap_report=None):
+    v=v or default_values(); res=result
+    if res:
+        f=flow(v); c,val,ch=res["control"],res["value"],res["chaos"]
+    else:
+        f={"control":"—","chaos":"—","transition":"—","collapse":"—","draw":"—"}
+        c=val=ch="—"
+    q,qs=quality(v)
     rows=hist_rows()
     history_html="<div class='card'><h2>ANALYSIS HISTORY</h2><div class='hist'><div>DATE</div><div>MATCH</div><div>TIP</div><div>VALUE</div><div>EXACT</div><div>RESULT</div><div>CLV</div>"
     if rows:
         for r in rows:
-            history_html+=f"<div>{esc(format_event_date(r[0]))}</div><div>{esc(r[1])} vs {esc(r[2])}</div><div>{esc(r[3])}</div><div class='g'>{r[5]}</div><div>{esc(r[6])}</div><div class='g'>OPEN</div><div class='g'>watch</div>"
+            history_html+=f"<div>{esc(format_event_date(r[0]))}</div><div>{esc(r[1])} vs {esc(r[2])}</div><div>{esc(r[3])}</div><div>{esc(r[5]) if r[5] else 'N/D'}</div><div>{esc(r[6])}</div><div>N/D</div><div>N/D</div>"
     else:
-        today = datetime.now()
-        demo=[((today - timedelta(days=1)).strftime("%Y-%m-%d"),"Arsenal vs Brighton","1","+8.7%","2:0","WIN","+4.1%"),((today - timedelta(days=2)).strftime("%Y-%m-%d"),"Man Utd vs Chelsea","X2","+3.2%","1:1","WIN","+1.9%")]
-        for d in demo:
-            for idx,x in enumerate(d):
-                if idx == 0:
-                    history_html += f"<div>{format_event_date(x)}</div>"
-                else:
-                    history_html += f"<div>{x}</div>"
+        history_html += "<div class='muted'>Brak zapisanych analiz.</div>"
     history_html+="</div></div>"
-    home=v["home_team"] or "Manchester City"; away=v["away_team"] or "West Ham United"
+    contract = (dap_report or {}).get("dap_contract") or {}
+    frozen_fixture = ((contract.get("immutable_facts_package") or {}).get("fixture") or {})
+    home=v["home_team"] or frozen_fixture.get("home") or "—"; away=v["away_team"] or frozen_fixture.get("away") or "—"
+    display_date = frozen_fixture.get("kickoff") or v.get("match_date") or datetime.now()
+    display_venue = frozen_fixture.get("venue_name") or "stadion niepotwierdzony"
+    dap_status = contract.get("status_dap") or "NOT RUN"
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge v30</title>{CSS}</head><body><div class='shell'>
 <aside class='left'><div class='logo'>⚡ QUANTUM<span>EDGE</span></div><div class='nav'><a href='/'>⌂ DASHBOARD</a><a href='/'>◉ LIVE</a><a href='/history'>↺ HISTORY</a><a href='/'>⌕ VALUE FINDER</a><a href='/'>🏆 LEAGUES</a><a href='/'>⚙ SETTINGS</a></div>
-<div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>COUNTRY</label><select name='league'><option>All Countries</option><option>Premier League</option><option>Serie A</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ GET STATS</button><button class='btn green' name='mode' value='odds'>💰 GET ODDS</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 ANALYZE</button></form></div>
-<div class='card'><h2>QUICK STATS</h2><div class='quick'><div>{crest(home)}<br>{esc(home)}</div><div>{crest(away)}<br>{esc(away)}</div></div><div class='mini'>WIN % <b>{v["form_home"]}</b> - <b>{v["form_away"]}</b></div><div class='mini'>AVG xG <b>{v["xg_home"]}</b> - <b>{v["xg_away"]}</b></div><div class='mini'>FORM <span class='g'>● ● ●</span> <span class='r'>● ●</span></div></div><p class='muted'>Quantum Edge v30</p></aside>
-<main class='center'><div class='top'><div class='status'>API STATUS <span></span>Odds API <span></span>Understat <span></span>Football-Data</div><div>LIVE CLOCK <span class='b'>{datetime.now().strftime("%H:%M:%S")}</span></div></div>
-<div class='card match'><div>{crest(home, True)}</div><div><small class='b'>PREMIER LEAGUE</small><h1>{esc(home)} vs {esc(away)}</h1><div class='muted'>📅 {format_event_date(datetime.now())} | 🏟 Stadium</div></div><div>{crest(away, True)}</div></div>
+<div class='card search'><h2>MATCH SEARCH</h2><form action='/fetch' method='post'><label>TEAM HOME</label><input name='home_team' value='{esc(v["home_team"])}' placeholder='Search teams...'><label>TEAM AWAY</label><input name='away_team' value='{esc(v["away_team"])}'><label>DATA MECZU</label><input type='date' name='match_date' value='{esc(v.get("match_date") or date_query(datetime.now()))}'><label>ROZGRYWKI</label><select name='league'><option>Premier League</option><option>Championship</option><option>La Liga</option><option>Serie A</option><option>Bundesliga</option><option>Ligue 1</option><option>Ekstraklasa</option></select>{hidden(v)}<button class='btn blue' name='mode' value='stats'>⚡ PODGLĄD DANYCH</button><button class='btn green' name='mode' value='odds'>💰 STATUS KURSÓW</button><button class='btn purple' formaction='/analyze' name='mode' value='analyze'>🔥 URUCHOM DAP + ANALIZĘ</button></form></div>
+<div class='card'><h2>QUICK STATS</h2><div class='quick'><div>{crest(home)}<br>{esc(home)}</div><div>{crest(away)}<br>{esc(away)}</div></div><div class='mini'>WIN % <b>{v["form_home"]}</b> - <b>{v["form_away"]}</b></div><div class='mini'>AVG xG <b>{v["xg_home"]}</b> - <b>{v["xg_away"]}</b></div><div class='mini'>Stan analizy: <b>{esc((dap_report or {}).get("state") or "NIE URUCHOMIONO")}</b></div></div><p class='muted'>Quantum Edge v30</p></aside>
+<main class='center'><div class='top'><div class='status'>DAP STATUS: <b>{esc(dap_status)}</b></div><div>UTC <span class='b'>{datetime.utcnow().strftime("%H:%M:%S")}</span></div></div>
+<div class='card match'><div>{crest(home, True)}</div><div><small class='b'>{esc(frozen_fixture.get("competition") or v.get("league") or "ROZGRYWKI NIEPOTWIERDZONE")}</small><h1>{esc(home)} vs {esc(away)}</h1><div class='muted'>📅 {esc(format_event_datetime(display_date))} | 🏟 {esc(display_venue)}</div></div><div>{crest(away, True)}</div></div>
+{dap_panel(dap_report)}
 <div class='card'><h2>FLOW ENGINE 2.0</h2><div class='flow'><div class='tile'><small>CONTROL FLOW</small><b class='g'>{f["control"]}</b></div><div class='tile'><small>CHAOS FLOW</small><b class='r'>{f["chaos"]}</b></div><div class='tile'><small>TRANSITION POWER</small><b class='p'>{f["transition"]}</b></div><div class='tile'><small>COLLAPSE RISK</small><b class='o'>{f["collapse"]}</b></div><div class='tile'><small>DRAW ACCEPTANCE</small><b class='b'>{f["draw"]}</b></div></div></div>
 <div class='card'><h2>EXACT SCORE ENGINE 2.0</h2><div class='score'><div><small>CONTROL SCENARIO</small><b class='g'>{c}</b></div><div><small>VALUE SCENARIO</small><b class='o'>{val}</b></div><div><small>CHAOS SCENARIO</small><b class='r'>{ch}</b></div></div></div>
-<div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else 0}</b></div><div><small>BEST ODDS</small><b class='o'>{v["odds"]}</b></div><div><small>VALUE EDGE</small><b class='g'>{res["edge"] if res else 0}</b></div><div><small>CLV</small><b class='g'>watch</b></div><div><small>STEAM MOVE</small><b class='g'>Detected</b></div><div><small>TRAP ALERT</small><b class='g'>No Trap</b></div></div></div>
-<div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2><div class='datagrid'><div><small>xG</small><b>{v["xg_home"]} - {v["xg_away"]}</b></div><div><small>xGA</small><b>{v["xga_home"]} - {v["xga_away"]}</b></div><div><small>FORMA</small><b>{v["form_home"]} - {v["form_away"]}</b></div><div><small>TEMPO</small><b>{v["tempo"]}/100</b></div><div><small>STRZAŁY</small><b>{v["shots_home"]} - {v["shots_away"]}</b></div><div><small>CELNE</small><b>{v["sot_home"]} - {v["sot_away"]}</b></div><div><small>ROŻNE</small><b>{v["corners_home"]} - {v["corners_away"]}</b></div><div><small>KARTKI</small><b>{v["cards_home"]} - {v["cards_away"]}</b></div></div></div><div class='insight'><div class='card'><h2>KEY MATCH INSIGHTS (AI)</h2><p>🟢 Jakość danych: {q} {qs}/100</p><p>🟡 Źródła: {esc(v["sources"])}</p><p>🟢 Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM CHART (xG)</h2><svg width='100%' height='120' viewBox='0 0 300 120'><polyline points='0,100 50,80 100,65 150,55 200,45 250,35 300,20' fill='none' stroke='#31bfff' stroke-width='3'/><polyline points='0,105 50,95 100,92 150,85 200,80 250,70 300,60' fill='none' stroke='#ff4a5f' stroke-width='3'/></svg></div></div>{history_html}</main>
-<aside class='right'><div class='card'><h2>TEAM PROFILES</h2><h3 class='b'>{esc(home.upper())}</h3><div>Control <b style='float:right'>85</b><div class='bar'><div class='fill' style='width:85%'></div></div></div><div>Transition <b style='float:right'>78</b><div class='bar'><div class='fill purp' style='width:78%'></div></div></div><div>Chaos <b style='float:right'>25</b><div class='bar'><div class='fill red' style='width:25%'></div></div></div><h3 class='r'>{esc(away.upper())}</h3><div>Control <b style='float:right'>28</b><div class='bar'><div class='fill red' style='width:28%'></div></div></div><div>Chaos <b style='float:right'>71</b><div class='bar'><div class='fill org' style='width:71%'></div></div></div></div>
-<div class='card'><h2>xG / xGA (LAST 5)</h2><div class='mini'><b>{esc(home)}</b><br>xG {v["xg_home"]}<br>xGA {v["xga_home"]}</div><div class='mini'><b>{esc(away)}</b><br>xG {v["xg_away"]}<br>xGA {v["xga_away"]}</div><svg width='100%' height='100' viewBox='0 0 280 100'><polyline points='0,80 40,70 80,40 120,44 160,34 200,30 240,18 280,10' fill='none' stroke='#31bfff' stroke-width='2'/><polyline points='0,86 40,76 80,72 120,70 160,65 200,62 240,54 280,44' fill='none' stroke='#ff4a5f' stroke-width='2'/></svg></div>
+<div class='card'><h2>MARKET INTELLIGENCE</h2><div class='market'><div><small>FAIR ODDS</small><b class='g'>{res["fair"] if res else "—"}</b></div><div><small>BEST ODDS</small><b class='o'>N/D</b></div><div><small>VALUE EDGE</small><b class='g'>N/D</b></div><div><small>CLV</small><b>N/D</b></div><div><small>STEAM MOVE</small><b>N/D</b></div><div><small>TRAP ALERT</small><b>N/D</b></div></div></div>
+<div class='card'><h2>STATYSTYKI POBRANE DO APLIKACJI</h2><div class='datagrid'><div><small>xG</small><b>{v["xg_home"]} - {v["xg_away"]}</b></div><div><small>xGA</small><b>{v["xga_home"]} - {v["xga_away"]}</b></div><div><small>FORMA</small><b>{v["form_home"]} - {v["form_away"]}</b></div><div><small>TEMPO</small><b>{v["tempo"]}/100</b></div><div><small>STRZAŁY</small><b>{v["shots_home"]} - {v["shots_away"]}</b></div><div><small>CELNE</small><b>{v["sot_home"]} - {v["sot_away"]}</b></div><div><small>ROŻNE</small><b>{v["corners_home"]} - {v["corners_away"]}</b></div><div><small>KARTKI</small><b>{v["cards_home"]} - {v["cards_away"]}</b></div></div></div><div class='insight'><div class='card'><h2>DATA COVERAGE</h2><p>Jakość wejścia modelu: {q} {qs}/100</p><p>Źródła: {esc(v["sources"])}</p><p>Komunikat: {esc(v["message"])}</p></div><div class='card'><h2>MOMENTUM (xG)</h2><p class='muted'>Brak zweryfikowanej serii czasowej — wykres nie jest generowany z wartości zastępczych.</p></div></div>{history_html}</main>
+<aside class='right'><div class='card'><h2>TEAM PROFILES</h2><h3 class='b'>{esc(home.upper())}</h3><div class='mini'>Profil dostępny dopiero po ukończeniu DAP i silnika.</div><h3 class='r'>{esc(away.upper())}</h3><div class='mini'>Brak wartości zastępczych.</div></div>
+<div class='card'><h2>xG / xGA (LAST 5)</h2><div class='mini'><b>{esc(home)}</b><br>xG {v["xg_home"]}<br>xGA {v["xga_home"]}</div><div class='mini'><b>{esc(away)}</b><br>xG {v["xg_away"]}<br>xGA {v["xga_away"]}</div></div>
 <div class='card'><h2>LAST MATCHES</h2><div class='mini'><b>H-H</b><br>{esc(v["home_home_matches"] or "brak danych")}</div><div class='mini'><b>H-A</b><br>{esc(v["home_away_matches"] or "brak danych")}</div><div class='mini'><b>A-H</b><br>{esc(v["away_home_matches"] or "brak danych")}</div><div class='mini'><b>A-A</b><br>{esc(v["away_away_matches"] or "brak danych")}</div></div></aside>{leagues_panel()}
 </div></body></html>"""
 
@@ -583,94 +614,14 @@ SELECT_CSS = """
 .select-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.select-metric{background:#071827;border:1px solid #225174;border-radius:12px;padding:12px}.select-metric small{color:#9eb4c9;display:block}.select-metric b{font-size:24px;color:#67f542}
 .select-table{width:100%;border-collapse:collapse}.select-table th,.select-table td{text-align:left;padding:11px 8px;border-bottom:1px solid #1b3c59}.select-table th{color:#8edcff;font-size:12px}.select-table td{font-size:14px}
 .select-pill{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:800}.tier-a{background:#155d39;color:#9dffbd}.tier-b{background:#73540b;color:#ffe49a}.tier-c{background:#273c51;color:#b9d8ed}.hold{background:#6d2535;color:#ffc2c9}
-.select-check{width:18px;height:18px;accent-color:#27c5ff}.select-note{color:#a9bed0;font-size:13px;line-height:1.5}.scan-progress{display:none;margin-top:12px}.scan-progress.active{display:block}.scan-track{height:10px;background:#071827;border-radius:999px;overflow:hidden}.scan-fill{height:100%;width:8%;background:linear-gradient(90deg,#27c5ff,#67f542);transition:width .7s ease}.scan-label{color:#9eb4c9;font-size:13px;margin-bottom:6px}
+.select-check{width:18px;height:18px;accent-color:#27c5ff}.select-note{color:#a9bed0;font-size:13px;line-height:1.5}.scan-progress{display:none;margin-top:12px}.scan-progress.active{display:block}.scan-track{height:10px;background:#071827;border-radius:999px;overflow:hidden}.scan-fill{height:100%;width:35%;background:linear-gradient(90deg,#27c5ff,#67f542);animation:source-wait 1.4s ease-in-out infinite alternate}.scan-label{color:#9eb4c9;font-size:13px;margin-bottom:6px}@keyframes source-wait{from{transform:translateX(-100%)}to{transform:translateX(280%)}}
 @media(max-width:760px){.select-app{padding:10px}.select-head{display:block}.select-actions{margin-top:14px}.select-grid{grid-template-columns:repeat(2,1fr)}.select-table{display:block;overflow-x:auto;white-space:nowrap}.select-table th,.select-table td{padding:10px 7px}.select-brand{font-size:24px}}
 """
 
 
-def api_global_rows(date_str):
-    iso = date_query(date_str, datetime.now())
-    out=[]; used=[]; seen=set()
-    af=os.getenv("API_FOOTBALL_KEY","").strip()
-    if not af:
-        used.append("API-Football: KEY MISSING")
-    else:
-        data,err=http_json("https://v3.football.api-sports.io/fixtures?date="+iso,{"x-apisports-key":af},timeout=10)
-        if err:
-            used.append("API-Football: ERROR "+err)
-        elif isinstance(data,dict):
-            fixtures=data.get("response",[])
-            used.append("API-Football: OK "+str(len(fixtures)))
-            for x in fixtures:
-                fx=x.get("fixture",{}); teams=x.get("teams",{})
-                home=(teams.get("home") or {}).get("name",""); away=(teams.get("away") or {}).get("name","")
-                if home and away:
-                    key=fixture_dedupe_key(home,away,fx.get("date",""))
-                    if key not in seen:
-                        seen.add(key); out.append({"id":"AF-"+str(len(out)+1).zfill(5),"date":fx.get("date",""),"home":home,"away":away,"source":"API-Football"})
-    sm=os.getenv("SPORTMONKS_TOKEN","").strip()
-    if sm:
-        data,err=http_json("https://api.sportmonks.com/v3/football/fixtures/date/"+iso+"?api_token="+sm,timeout=10)
-        if err:
-            used.append("Sportmonks: ERROR "+err)
-        elif isinstance(data,dict):
-            fixtures=data.get("data",[])
-            used.append("Sportmonks: OK "+str(len(fixtures)))
-            for x in fixtures:
-                parts=x.get("participants") or []
-                home=parts[0].get("name","") if parts else ""; away=parts[-1].get("name","") if len(parts)>1 else ""
-                if home and away:
-                    key=fixture_dedupe_key(home,away,x.get("starting_at",""))
-                    if key not in seen:
-                        seen.add(key); out.append({"id":"SM-"+str(len(out)+1).zfill(5),"date":x.get("starting_at",""),"home":home,"away":away,"source":"Sportmonks"})
-    return out,used
-
-def thesportsdb_rows(date_str):
-    iso = date_query(date_str, datetime.now())
-    data,err=http_json("https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d="+iso+"&s=Soccer",timeout=10)
-    if err:
-        return [],["TheSportsDB: ERROR "+err]
-    events=(data or {}).get("events") or [] if isinstance(data,dict) else []
-    out=[]
-    for x in events:
-        home=(x.get("strHomeTeam") or "").strip(); away=(x.get("strAwayTeam") or "").strip()
-        if home and away:
-            out.append({"id":"TSDB-"+str(len(out)+1).zfill(5),"date":(x.get("strTimestamp") or x.get("dateEvent") or ""), "home":home, "away":away, "source":"TheSportsDB","home_id":x.get("idHomeTeam"),"away_id":x.get("idAwayTeam")})
-    return out,["TheSportsDB: OK "+str(len(out))]
-
 def fixture_feed_rows(date_str):
-    # Broad fixture feed for SELECT. It is independent of odds and exact-score markets.
-    global_rows,global_sources=api_global_rows(date_str)
-    tsdb_rows,tsdb_sources=thesportsdb_rows(date_str)
-    date_str = date_query_compact(date_str, datetime.now())
-    leagues=["eng.1","eng.2","esp.1","ita.1","ger.1","fra.1","ned.1","por.1","bel.1","sco.1","pol.1","bra.1","arg.1","mex.1","usa.1","uefa.champions","uefa.europa","conmebol.libertadores","conmebol.sudamericana"]
-    out=list(global_rows)+list(tsdb_rows)
-    seen={fixture_dedupe_key(r.get("home"),r.get("away"),r.get("date")) for r in out}
-    used=list(global_sources)+list(tsdb_sources)
-    for league in leagues:
-        url=f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
-        data,err=http_json(url,timeout=10)
-        if err:
-            used.append("ESPN:"+league+": ERROR "+err)
-            continue
-        if not isinstance(data,dict):
-            used.append("ESPN:"+league+": INVALID")
-            continue
-        used.append("ESPN:"+league+": OK "+str(len(data.get("events",[]))))
-        for ev in data.get("events",[]):
-            comp=(ev.get("competitions") or [{}])[0]
-            teams=comp.get("competitors") or []
-            home=next((x.get("team",{}).get("displayName","") for x in teams if x.get("homeAway")=="home"),"")
-            away=next((x.get("team",{}).get("displayName","") for x in teams if x.get("homeAway")=="away"),"")
-            if not home or not away: continue
-            status=((ev.get("status") or {}).get("type") or {}).get("name","")
-            if status in {"STATUS_FINAL","STATUS_IN_PROGRESS","STATUS_FULL_TIME"}: continue
-            start=ev.get("date","")
-            key=fixture_dedupe_key(home,away,start)
-            if key in seen: continue
-            seen.add(key)
-            out.append({"id":"ESPN-"+str(len(out)+1).zfill(5),"date":start,"home":home,"away":away,"source":"ESPN:"+league})
-    return out,used
+    # SELECT and DAP share the same normalized fixture adapters and statuses.
+    return scan_fixtures(date_query(date_str, datetime.now()),client=SOURCE_HTTP_CLIENT)
 
 def select_rows_for_date(date_str):
     # SELECT must report live-source failures instead of hiding them behind archive CSVs.
@@ -700,16 +651,9 @@ def select_rows_for_date(date_str):
 
 def scan_match_rows(scan_date):
     center=normalize_query_date(scan_date, datetime.now())
-    all_rows=[]; all_sources=[]; seen=set()
-    for delta in (-1,0,1):
-        day=(center+timedelta(days=delta)).strftime("%Y-%m-%d")
-        day_rows,day_sources=select_rows_for_date(day)
-        all_sources.extend(day_sources)
-        for row in day_rows:
-            key=fixture_dedupe_key(row.get("home"),row.get("away"),row.get("date"))
-            if key not in seen:
-                seen.add(key); all_rows.append(row)
-    return all_rows, sorted(set(all_sources)), date_query(center, datetime.now())
+    day=date_query(center, datetime.now())
+    rows,sources=select_rows_for_date(day)
+    return rows, sources, day
 
 def select_ranked(rows):
     scored=[]
@@ -721,20 +665,24 @@ def select_ranked(rows):
     return scored,master
 
 def persist_selected_matches(rows):
-    if not rows:
-        return 0
-    con=sqlite3.connect(DB_PATH)
-    cur=con.cursor()
-    inserted=0
-    for row in rows:
-        v=fetch_stats(row.get("home",""),row.get("away",""))
-        r=model(v)
-        started = format_event_datetime(row.get("date")) or format_event_date(datetime.now())
-        cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)", (started,v["home_team"],v["away_team"],r["pick"],r["prob"],r["fair"],v["odds"],r["edge"],r["control"],r["rating"]))
-        inserted += 1
-    con.commit()
-    con.close()
-    return inserted
+    # Kept as one compatibility entry point, but it no longer persists
+    # directly. Every selected match must complete the global runner.
+    return [PIPELINE_RUNNER.run(dict(row)) for row in (rows or [])]
+
+
+def pipeline_results_page(outcomes):
+    items=[]
+    for outcome in outcomes or []:
+        contract=outcome.get("dap_contract") or {}
+        items.append(
+            "<li><b>{}</b> · DAP {} · {} · {}</li>".format(
+                esc(outcome.get("run_id") or "—"),
+                esc(contract.get("status_dap") or "—"),
+                esc(contract.get("handover_status") or "—"),
+                esc(outcome.get("state") or "—"),
+            )
+        )
+    return """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge · DAP</title><style>{css}</style></head><body><main class='select-app'><div class='select-wrap'><section class='select-card'><h2>WYNIKI PRZEPŁYWU DAP</h2><ol>{items}</ol><p class='select-note'>Wynik analizy istnieje wyłącznie dla stanu COMPLETED. DAP_BLOCKED nie uruchamia silnika i niczego nie dopisuje do historii.</p><div class='select-actions'><a class='select-btn' href='/history'>HISTORIA</a><a class='select-btn secondary' href='/'>SELECT</a></div></section></div></main></body></html>""".format(css=SELECT_CSS,items="".join(items) or "<li>Brak uruchomień.</li>")
 
 def api_team_history(team_name, last=10):
     """Fetch prematch history from API-Football without exposing the API key."""
@@ -810,8 +758,29 @@ def select_score(row):
 def select_page(rows=None,sources=None,scan_date="",run_id="",message="",scored=None):
     rows=rows or []; sources=sources or []
     scan_date = date_query(scan_date, datetime.now())
-    working_sources=[s for s in sources if "ERROR" not in s]
-    failed_sources=[s for s in sources if "ERROR" in s]
+    normalized_sources=[]
+    for source in sources:
+        if isinstance(source, dict):
+            normalized_sources.append(source)
+        else:
+            label=str(source)
+            normalized_sources.append({
+                "source":label.split(":")[0],
+                "status":SOURCE_FAILED if "ERROR" in label else SOURCE_SUCCESS,
+                "records":0,
+                "error":label if "ERROR" in label else None,
+            })
+    provider_status={}
+    for source in normalized_sources:
+        provider=(source.get("source") or "UNKNOWN").split(":")[0]
+        statuses=provider_status.setdefault(provider,[])
+        statuses.append(source.get("status") or "UNKNOWN")
+    working_sources=sorted(provider for provider,statuses in provider_status.items() if SOURCE_SUCCESS in statuses)
+    failed_sources=[source for source in normalized_sources if source.get("status") in {SOURCE_FAILED,SOURCE_INVALID,SOURCE_NOT_CONFIGURED}]
+    status_details=" · ".join(
+        "{}: {} ({})".format(source.get("source"),source.get("status"),source.get("records",0))
+        for source in normalized_sources
+    )
     if isinstance(scored, tuple) and len(scored)==2:
         scored,master = scored
     elif scored is None:
@@ -827,48 +796,43 @@ def select_page(rows=None,sources=None,scan_date="",run_id="",message="",scored=
     if not mbody: mbody="<li>MASTER Queue pusta</li>"
     alert = f"<section class='select-card'><p class='select-note'>{esc(message)}</p></section>" if message else ""
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quantum Edge SELECT</title><style>{SELECT_CSS}</style></head><body><main class='select-app'><div class='select-wrap'>
-<header class='select-head'><div><div class='select-brand'>⚡ QUANTUM <span>EDGE</span> SELECT</div><div class='select-sub'>P11.2 · NO ODDS · NO FINAL EXACT · pełny skan kandydatów</div></div><div class='select-actions'><form id='scan-form' method='post' action='/select/scan'><input type='date' name='scan_date' value='{esc(scan_date)}'><button id='scan-btn' class='select-btn'>SKANUJ MECZE</button><div id='scan-progress' class='scan-progress'><div class='scan-label'>Pobieram terminarze i sprawdzam źródła…</div><div class='scan-track'><div id='scan-fill' class='scan-fill'></div></div></div></form><script>document.getElementById('scan-form').addEventListener('submit',function(){{var b=document.getElementById('scan-btn'),p=document.getElementById('scan-progress'),f=document.getElementById('scan-fill');b.disabled=true;b.textContent='SKANOWANIE…';p.classList.add('active');var n=8;setInterval(function(){{if(n<92){{n+=7;f.style.width=n+'%'}}}},700)}})</script></div></header>
+<header class='select-head'><div><div class='select-brand'>⚡ QUANTUM <span>EDGE</span> SELECT</div><div class='select-sub'>P11.2 · NO ODDS · NO FINAL EXACT · pełny skan kandydatów</div></div><div class='select-actions'><form id='scan-form' method='post' action='/select/scan'><input type='date' name='scan_date' value='{esc(scan_date)}'><button id='scan-btn' class='select-btn'>SKANUJ MECZE</button><div id='scan-progress' class='scan-progress'><div class='scan-label'>Żądanie źródłowe trwa; wynik pojawi się po odpowiedzi adapterów.</div><div class='scan-track'><div id='scan-fill' class='scan-fill'></div></div></div></form><script>document.getElementById('scan-form').addEventListener('submit',function(){{var b=document.getElementById('scan-btn'),p=document.getElementById('scan-progress');b.disabled=true;b.textContent='SKANOWANIE…';p.classList.add('active')}})</script></div></header>
 {alert}
-<section class='select-card'><div class='select-grid'><div class='select-metric'><small>ŹRÓDŁA</small><b>{len(sources)}</b></div><div class='select-metric'><small>CANDIDATE POOL</small><b>{len(scored)}</b></div><div class='select-metric'><small>SHOWN</small><b>{len(scored)}</b></div><div class='select-metric'><small>MASTER QUEUE</small><b>{min(4,len(master))}</b></div></div><p class='select-note'>Coverage: {esc(", ".join(working_sources) or "brak działającego źródła")} · Niedostępne źródła: {len(failed_sources)} · SELECT nie używa kursów, składów ani exact score.</p></section>
+<section class='select-card'><div class='select-grid'><div class='select-metric'><small>DOSTAWCY</small><b>{len(provider_status)}</b></div><div class='select-metric'><small>CANDIDATE POOL</small><b>{len(scored)}</b></div><div class='select-metric'><small>SHOWN</small><b>{len(scored)}</b></div><div class='select-metric'><small>MASTER QUEUE</small><b>{min(4,len(master))}</b></div></div><p class='select-note'>Coverage: {esc(", ".join(working_sources) or "brak działającego źródła")} · Niedostępne/niepoprawne ścieżki: {len(failed_sources)} · SELECT nie używa kursów, składów ani exact score.</p><p class='select-note'>{esc(status_details or "Brak uruchomionych adapterów.")}</p></section>
 <section class='select-card'><h2>SHORTLIST SELECT</h2><form method='post' action='/select/master'><input type='hidden' name='run_id' value='{esc(run_id)}'><div style='overflow-x:auto'><table class='select-table'><thead><tr><th></th><th>MATCH ID</th><th>MECZ</th><th>START</th><th>PROFIL</th><th>XS01–06</th><th>TIER / XS</th><th>REASON</th></tr></thead><tbody>{body}</tbody></table></div><div class='select-actions' style='margin-top:14px'><button class='select-btn master'>PRZEKAŻ ZAZNACZONE DO MASTER</button></div></form></section>
 <section class='select-card'><h2>MASTER QUEUE · MAKS. 4</h2><ol>{mbody}</ol><p class='select-note'>To jest kolejka przekazania do MASTER. SELECT nie podaje wyniku exact score.</p></section>
 </div></main></body></html>"""
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    rows,sources,scan_date=scan_match_rows(datetime.now())
-    scored,master=select_ranked(rows)
-    run_id=_remember_select_run(rows,sources,scan_date, (scored,master))
-    return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master))
+    scan_date=date_query(datetime.now())
+    run_id=_remember_select_run([],[],scan_date, ([],[]))
+    return select_page([],[],scan_date,run_id=run_id,scored=([],[]),message="Wybierz datę i uruchom jawny skan. Otwarcie strony nie uruchamia źródeł, DAP ani silników.")
 
 @app.post("/select/scan", response_class=HTMLResponse)
 def select_scan(scan_date:str=Form("")):
     rows,sources,scan_date=scan_match_rows(scan_date)
     scored,master=select_ranked(rows)
     run_id=_remember_select_run(rows,sources,scan_date, (scored,master))
-    top = scored[:4] if scored else []
-    if not top:
-        return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master),message="Brak kandydatów do automatycznego MASTERA.")
-    persist_selected_matches(top)
-    return RedirectResponse(url="/history", status_code=303)
+    message="Skan zakończony. Nie uruchomiono DAP, silników ani zapisu. Zaznacz mecze, które chcesz jawnie przekazać dalej."
+    if not scored:
+        message="Skan zakończony bez kandydatów. Nie uruchomiono DAP, silników ani zapisu."
+    return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master),message=message)
 
 @app.post("/select/master", response_class=HTMLResponse)
 def select_master(run_id:str=Form(""),match_id:list=Form([])):
     run=_get_select_run(run_id)
     if not run:
-        rows,sources,scan_date=scan_match_rows(datetime.now())
-        scored,master=select_ranked(rows)
-        run_id=_remember_select_run(rows,sources,scan_date,(scored,master))
-        return select_page(rows,sources,scan_date,run_id=run_id,scored=(scored,master),message="Brak sesji skanu — wygenerowałem nową listę.")
+        scan_date=date_query(datetime.now())
+        run_id=_remember_select_run([],[],scan_date,([],[]))
+        return select_page([],[],scan_date,run_id=run_id,scored=([],[]),message="Sesja skanu wygasła. Uruchom skan ponownie; niczego nie przeanalizowano automatycznie.")
     scored,master=run.get("scored", ([],[]))
     by_id={r.get("id"):r for r in scored}
     chosen=[by_id.get(x) for x in match_id if by_id.get(x)]
     if not chosen:
-        chosen=[r for r in master if r.get("id")]
-    if not chosen:
-        return select_page(run["rows"],run["sources"],run["scan_date"],run_id=run_id,scored=(scored,master),message="MASTER QUEUE jest pusta — naciśnij SKANUJ MECZE.")
-    persist_selected_matches(chosen)
-    return RedirectResponse(url="/history", status_code=303)
+        return select_page(run["rows"],run["sources"],run["scan_date"],run_id=run_id,scored=(scored,master),message="Nie zaznaczono meczu. MASTER nie wybiera już domyślnego kandydata i niczego nie uruchomił.")
+    outcomes=persist_selected_matches(chosen[:4])
+    return pipeline_results_page(outcomes)
 
 @app.get("/history", response_class=HTMLResponse)
 def history(): return page(default_values(),show_history=True)
@@ -878,15 +842,37 @@ def fetch_get():
     return page(default_values())
 
 @app.post("/fetch", response_class=HTMLResponse)
-def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),mode:str=Form("stats"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
-    cur=form_values(**locals())
-    upd=fetch_odds(home_team,away_team,"Rynek") if mode=="odds" else fetch_stats(home_team,away_team,city)
-    v=merge(cur,upd,ODDS_KEYS if mode=="odds" else STAT_KEYS)
+def fetch(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),match_date:str=Form(""),mode:str=Form("stats"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(0),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
+    v=default_values()
+    v["home_team"]=normalize_team_name(home_team); v["away_team"]=normalize_team_name(away_team); v["city"]=city
+    if mode=="odds":
+        v=merge(v,fetch_odds(home_team,away_team,"Rynek"),ODDS_KEYS)
+    else:
+        v["message"]="Statystyki wejściowe są kompletowane wyłącznie przez audytowalny DAP. Ten podgląd nie uruchomił DAP ani modelu."
+        v["sources"]="DAP: NOT RUN"
+    v["match_date"]=date_query(match_date,datetime.now()); v["league"]=league
     return page(v)
 @app.post("/analyze", response_class=HTMLResponse)
-def analyze(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(1.75),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
-    v=form_values(**locals()); r=model(v)
-    con=sqlite3.connect(DB_PATH); cur=con.cursor()
-    cur.execute("INSERT INTO analyses (created_at, home_team, away_team, pick, probability, fair_odds, bookmaker_odds, value_edge, exact_score, rating) VALUES (?,?,?,?,?,?,?,?,?,?)",(format_event_date(datetime.now()),home_team,away_team,r["pick"],r["prob"],r["fair"],odds,r["edge"],r["control"],r["rating"]))
-    con.commit(); con.close()
-    return page(v,r)
+def analyze(home_team:str=Form(""),away_team:str=Form(""),city:str=Form(""),league:str=Form("Premier League"),match_date:str=Form(""),xg_home:float=Form(0),xg_away:float=Form(0),xga_home:float=Form(0),xga_away:float=Form(0),xg_source:str=Form(""),form_home:float=Form(0),form_away:float=Form(0),tempo:float=Form(0),odds:float=Form(0),odds_1:float=Form(0),odds_x:float=Form(0),odds_2:float=Form(0),shots_home:float=Form(0),shots_away:float=Form(0),sot_home:float=Form(0),sot_away:float=Form(0),corners_home:float=Form(0),corners_away:float=Form(0),cards_home:float=Form(0),cards_away:float=Form(0),odds_source:str=Form(""),home_home_matches:str=Form(""),home_away_matches:str=Form(""),away_home_matches:str=Form(""),away_away_matches:str=Form("")):
+    fixture=resolve_fixture_for_analysis(home_team,away_team,match_date,league)
+    run=PIPELINE_RUNNER.run(fixture)
+    contract=run.get("dap_contract") or {}
+    engine_input=((contract.get("immutable_facts_package") or {}).get("engine_input") or {})
+    v=default_values()
+    for key,value in engine_input.items():
+        if key in v: v[key]=value
+    v["home_team"]=fixture.get("home") or normalize_team_name(home_team)
+    v["away_team"]=fixture.get("away") or normalize_team_name(away_team)
+    v["match_date"]=date_query(fixture.get("kickoff") or match_date,datetime.now())
+    v["league"]=fixture.get("competition") or league
+    v["message"]="DAP zakończony: {}".format(contract.get("handover_status") or run.get("error") or run.get("state"))
+    result=run.get("engine_result") if run.get("state")=="COMPLETED" else None
+    return page(v,result,dap_report=run)
+
+
+@app.get("/api/runs/{run_id}")
+def analysis_run(run_id:str):
+    run=PIPELINE_REPOSITORY.get_run(run_id)
+    if not run:
+        return JSONResponse({"error":"RUN_NOT_FOUND"},status_code=404)
+    return JSONResponse(run)
